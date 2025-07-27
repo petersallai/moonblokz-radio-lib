@@ -31,7 +31,6 @@ use embassy_executor::Spawner;
 mod relay_manager;
 mod rx_handler;
 mod tx_scheduler;
-mod wait_pool;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -40,10 +39,14 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
+//Hardware dependent constants, that affect compatibility of a node
 const RADIO_PACKET_SIZE: usize = 200;
 const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
+
+//Hardware dependent constants, that only affect efficiency of a node, but does not result incompatibility
 const CONNECTION_MATRIX_SIZE: usize = 100;
 const INCOMMING_PACKET_BUFFER_SIZE: usize = 50;
+const WAIT_POOL_SIZE: usize = 10;
 
 /// Configuration for radio transmission timing
 ///
@@ -54,6 +57,8 @@ pub struct RadioConfiguration {
     pub delay_between_tx_packets: u8,
     /// Delay in seconds between complete message transmissions
     pub delay_between_tx_messages: u8,
+    pub echo_request_minimal_interval: u32,
+    pub echo_request_additional_interval_by_neighbor: u32,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -216,16 +221,17 @@ impl RadioMessage {
         RadioMessage { payload, length: 5 }
     }
 
-    pub fn new_echo(node_id: u32, rssi: u8, snr: u8) -> Self {
+    pub fn new_echo(node_id: u32, target_node_id: u32, link_quality: u8) -> Self {
         // Create a new RadioMessage with a specific message type for echo responses
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::Echo as u8;
         let node_id_bytes = node_id.to_le_bytes();
         payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
-        payload[node_id_bytes.len() + 1] = rssi;
-        payload[node_id_bytes.len() + 2] = snr;
+        let target_node_id_bytes = target_node_id.to_le_bytes();
+        payload[5..5 + target_node_id_bytes.len()].copy_from_slice(&target_node_id_bytes);
+        payload[5 + target_node_id_bytes.len()] = link_quality;
 
-        RadioMessage { payload, length: 7 }
+        RadioMessage { payload, length: 10 }
     }
 
     pub fn new_request_full_block(node_id: u32, sequence: u32) -> Self {
@@ -394,19 +400,18 @@ impl RadioMessage {
         self.length
     }
 
-    pub(crate) fn get_echo_data(&self) -> Option<(u8, u8)> {
+    pub(crate) fn get_echo_data(&self) -> Option<(u8)> {
         // Extract echo data from the message payload
         if self.message_type() != MessageType::Echo as u8 {
             return None;
         }
-        if self.length < 7 {
+        if self.length < 6 {
             return None; // Not enough data for echo
         }
 
-        let rssi = self.payload[5];
-        let snr = self.payload[6];
+        let link_quality = self.payload[5];
 
-        Some((rssi, snr))
+        Some(link_quality)
     }
 
     pub fn get_add_transaction_data(&self) -> Option<(u32, u32, &[u8])> {
@@ -467,8 +472,7 @@ impl RadioPacket {
 
 struct ReceivedPacket {
     packet: RadioPacket,
-    rssi: u8,
-    snr: u8,
+    link_quality: u8,
 }
 
 enum RadioCommunicationManagerState {
@@ -495,7 +499,14 @@ impl RadioCommunicationManager {
     }
 
     #[cfg(feature = "embedded")]
-    pub fn initialize(&mut self, radio_config: RadioConfiguration, spawner: Spawner, radio_device: RadioDevice, rng_seed: u64) -> Result<(), ()> {
+    pub fn initialize(
+        &mut self,
+        radio_config: RadioConfiguration,
+        spawner: Spawner,
+        radio_device: RadioDevice,
+        own_node_id: u32,
+        rng_seed: u64,
+    ) -> Result<(), ()> {
         return self.initialize_common(
             radio_config,
             spawner,
@@ -506,12 +517,20 @@ impl RadioCommunicationManager {
             &TX_PACKET_QUEUE,
             &RX_PACKET_QUEUE,
             &RX_STATE_QUEUE,
+            own_node_id,
             rng_seed,
         );
     }
 
     #[cfg(feature = "std")]
-    pub fn initialize(&mut self, radio_config: RadioConfiguration, spawner: Spawner, radio_device: RadioDevice, rng_seed: u64) -> Result<(), ()> {
+    pub fn initialize(
+        &mut self,
+        radio_config: RadioConfiguration,
+        spawner: Spawner,
+        radio_device: RadioDevice,
+        own_node_id: u32,
+        rng_seed: u64,
+    ) -> Result<(), ()> {
         let outgoing_message_queue_temp: OutgoingMessageQeueue = Channel::new();
         let outgoing_message_queue_static: &'static OutgoingMessageQeueue = Box::leak(Box::new(outgoing_message_queue_temp));
 
@@ -539,6 +558,7 @@ impl RadioCommunicationManager {
             tx_packet_queue_static,
             rx_packet_queue_static,
             rx_state_queue_static,
+            own_node_id,
             rng_seed,
         );
     }
@@ -554,6 +574,7 @@ impl RadioCommunicationManager {
         tx_packet_queue: &'static TXPacketQueue,
         rx_packet_queue: &'static RxPacketQueue,
         rx_state_queue: &'static RxStateQueue,
+        own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
         let mut rng = WyRand::seed_from_u64(rng_seed);
@@ -589,6 +610,9 @@ impl RadioCommunicationManager {
             rx_packet_queue.receiver(),
             rx_state_queue.sender(),
             process_result_queue.receiver(),
+            radio_config.echo_request_minimal_interval,
+            radio_config.echo_request_additional_interval_by_neighbor,
+            own_node_id,
             rng.next_u64(),
         ));
         if rx_handler_task_result.is_err() {

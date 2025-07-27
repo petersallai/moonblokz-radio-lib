@@ -19,8 +19,7 @@ impl RadioDevice {
             let packet = tx_receiver.receive().await;
             let _ = rx_sender.try_send(crate::ReceivedPacket {
                 packet: packet,
-                rssi: 0,
-                snr: 0,
+                link_quality: 127,
             });
         }
     }

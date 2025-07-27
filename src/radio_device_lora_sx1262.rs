@@ -83,51 +83,65 @@ enum RadioDeviceError {
     CADFailed,
 }
 
-// Define the valid input ranges as i16.
-const RSSI_MIN_I16: i16 = -130;
-const RSSI_MAX_I16: i16 = -30;
+// --- Define the expected operational range for your radio ---
+// These values are typical for LoRaWAN.
 
-const SNR_MIN_I16: i16 = -20;
-const SNR_MAX_I16: i16 = 10;
+/// The lowest RSSI you expect to be able to decode a signal.
+const RSSI_MIN: i16 = -120;
+/// The RSSI of a very strong signal, close to the receiver.
+const RSSI_MAX: i16 = -30;
 
-/// Converts an i16 RSSI to the full u8 range (0-255) using only integer math.
-fn convert_rssi_to_u8(rssi: i16) -> u8 {
-    // 1. Clamp the input value to the defined range.
-    let clamped_rssi = rssi.clamp(RSSI_MIN_I16, RSSI_MAX_I16);
+/// The lowest SNR for a decodable signal (can be negative for LoRa).
+const SNR_MIN: i16 = -20;
+/// A very clean signal's SNR.
+const SNR_MAX: i16 = 10;
 
-    // 2. Use i32 for calculations to prevent overflow.
-    let rssi_i32 = clamped_rssi as i32;
-    let min_i32 = RSSI_MIN_I16 as i32;
-    let max_i32 = RSSI_MAX_I16 as i32;
+/// Normalizes a given value to a 0-63 scale based on defined min/max bounds.
+///
+/// The function clamps the value within the bounds, so inputs outside the
+/// min/max range will result in 0 or 63 respectively.
+///
+/// # Arguments
+/// * `value` - The input value to normalize (e.g., -90 for RSSI).
+/// * `min` - The bottom of the input range (e.g., -120).
+/// * `max` - The top of the input range (e.g., -30).
+///
+/// # Returns
+/// A `u8` value scaled to the 0-63 range.
+fn normalize(value: i16, min: i16, max: i16) -> u8 {
+    // 1. Clamp the value to ensure it's within the defined range.
+    let clamped_value = value.max(min).min(max);
 
-    // 3. Calculate the range.
-    let range = max_i32 - min_i32;
+    // 2. Shift the range to start at 0.
+    let shifted_value = clamped_value - min;
 
-    // 4. Perform scaling: multiply first, then add half the range for rounding, then divide.
-    let scaled = ((rssi_i32 - min_i32) * 255 + (range / 2)) / range;
+    // 3. Scale the value to the 0-63 range using integer arithmetic.
+    // We multiply by 63 first to maintain precision before the division.
+    let scaled_value = (shifted_value as u32 * 63) / (max - min) as u32;
 
-    // 5. The result is safely within the u8 range.
-    scaled as u8
+    scaled_value as u8
 }
 
-/// Converts an i16 SNR to the full u8 range (0-255) using only integer math.
-fn convert_snr_to_u8(snr: i16) -> u8 {
-    // 1. Clamp the input value to the defined range.
-    let clamped_snr = snr.clamp(SNR_MIN_I16, SNR_MAX_I16);
+/// Calculates the combined link quality from RSSI and SNR.
+///
+/// # Arguments
+/// * `rssi` - The raw RSSI value in dBm (e.g., -88).
+/// * `snr` - The raw SNR value in dB (e.g., 7).
+///
+/// # Returns
+/// A `LinkQuality` struct containing the final 0-127 score.
+pub fn calculate_link_quality(rssi: i16, snr: i16) -> u8 {
+    // 1. Normalize both RSSI and SNR to a common 0-127 scale.
+    let norm_rssi = normalize(rssi, RSSI_MIN, RSSI_MAX);
+    let norm_snr = normalize(snr, SNR_MIN, SNR_MAX);
 
-    // 2. Use i32 for calculations.
-    let snr_i32 = clamped_snr as i32;
-    let min_i32 = SNR_MIN_I16 as i32;
-    let max_i32 = SNR_MAX_I16 as i32;
+    // 2. Calculate the weighted average using integer math.
+    // Weights: 7 for SNR, 3 for RSSI. Total weight is 10.
+    // We use u32 for the intermediate calculation to prevent overflow.
+    let quality = (3 * norm_rssi as u32 + 7 * norm_snr as u32) / 10;
 
-    // 3. Calculate the range.
-    let range = max_i32 - min_i32;
-
-    // 4. Perform scaling with rounding.
-    let scaled = ((snr_i32 - min_i32) * 255 + (range / 2)) / range;
-
-    // 5. Cast the final result to u8.
-    scaled as u8
+    // The result is guaranteed to be in the 0-127 range.
+    quality as u8
 }
 
 /// State of the radio device
@@ -461,8 +475,7 @@ impl RadioDevice {
 
                         Ok(ReceivedPacket {
                             packet: RadioPacket { data, length: copy_len },
-                            rssi: convert_rssi_to_u8(packet_status.rssi),
-                            snr: convert_snr_to_u8(packet_status.snr),
+                            link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
                         })
                     }
                     Err(_err) => Err(RadioDeviceError::TransmissionFailed),

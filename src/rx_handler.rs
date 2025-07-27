@@ -1,4 +1,4 @@
-use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState};
+use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState, WAIT_POOL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
@@ -6,7 +6,7 @@ use log::{Level, log};
 
 use crate::{
     IncommingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver, RxStateQueueSender,
-    relay_manager::RelayManager, wait_pool::WaitPool,
+    relay_manager::RelayManager,
 };
 
 struct PacketBufferItem {
@@ -24,14 +24,17 @@ pub(crate) async fn rx_handler_task(
     rx_packet_queue_receiver: RxPacketQueueReceiver,
     rx_state_queue_sender: RxStateQueueSender,
     process_result_queue_receiver: ProcessResultQueueReceiver,
+    echo_request_minimal_interval: u32,
+    echo_request_additional_interval_by_neighbor: u32,
+    own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
     let mut packet_buffer: [Option<PacketBufferItem>; INCOMMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMMING_PACKET_BUFFER_SIZE];
     let mut packet_check_buffer: [u8; INCOMMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMMING_PACKET_BUFFER_SIZE];
 
     loop {
-        let relay_manager = RelayManager::<CONNECTION_MATRIX_SIZE>::new();
-        let waitpool = WaitPool::new();
+        let relay_manager =
+            RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(echo_request_minimal_interval, echo_request_additional_interval_by_neighbor);
 
         match select3(
             rx_packet_queue_receiver.receive(),
@@ -168,10 +171,10 @@ pub(crate) async fn rx_handler_task(
                         }
                         process_message(
                             radio_message,
-                            received_packet.rssi,
-                            received_packet.snr,
+                            received_packet.link_quality,
                             outgoing_message_queue_sender,
                             incomming_message_queue_sender,
+                            own_node_id,
                         );
 
                         // Clear the buffer for the next message
@@ -195,13 +198,13 @@ pub(crate) async fn rx_handler_task(
 
 fn process_message(
     message: RadioMessage,
-    last_rssi: u8,
-    last_snr: u8,
+    last_link_quality: u8,
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
     incomming_message_queue_sender: IncommingMessageQueueSender,
+    own_node_id: u32,
 ) {
     if message.message_type() == MessageType::RequestEcho as u8 {
-        let echo_response = RadioMessage::new_echo(message.sender_node_id(), last_rssi, last_snr);
+        let echo_response = RadioMessage::new_echo(own_node_id, message.sender_node_id(), last_link_quality);
         let result = outgoing_message_queue_sender.try_send(echo_response);
         if let Err(result_error) = result {
             let failed_message = match result_error {
