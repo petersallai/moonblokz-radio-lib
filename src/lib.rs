@@ -64,6 +64,7 @@ pub struct RadioConfiguration {
     pub delay_between_tx_messages: u8,
     pub echo_request_minimal_interval: u32,
     pub echo_messages_target_interval: u8,
+    pub echo_gathering_timeout: u8,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -294,6 +295,7 @@ impl RadioCommunicationManager {
             process_result_queue.receiver(),
             radio_config.echo_request_minimal_interval,
             radio_config.echo_messages_target_interval,
+            radio_config.echo_gathering_timeout,
             own_node_id,
             rng.next_u64(),
         ));

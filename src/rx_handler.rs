@@ -1,8 +1,12 @@
+use crate::relay_manager::{self, RelayResult};
 use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState, WAIT_POOL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
 use log::{Level, log};
+use rand_core::RngCore;
+use rand_core::SeedableRng;
+use rand_wyrand::WyRand;
 
 use crate::{
     IncommingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver, RxStateQueueSender,
@@ -26,20 +30,27 @@ pub(crate) async fn rx_handler_task(
     process_result_queue_receiver: ProcessResultQueueReceiver,
     echo_request_minimal_interval: u32,
     echo_messages_target_interval: u8,
+    echo_gathering_timeout: u8,
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
     let mut packet_buffer: [Option<PacketBufferItem>; INCOMMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMMING_PACKET_BUFFER_SIZE];
     let mut packet_check_buffer: [u8; INCOMMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMMING_PACKET_BUFFER_SIZE];
+    let mut rng = WyRand::seed_from_u64(rng_seed);
 
     loop {
-        let relay_manager =
-            RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(echo_request_minimal_interval, echo_messages_target_interval, own_node_id);
+        let mut relay_manager = RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(
+            echo_request_minimal_interval,
+            echo_messages_target_interval,
+            echo_gathering_timeout,
+            own_node_id,
+            rng.next_u64(),
+        );
 
         match select3(
             rx_packet_queue_receiver.receive(),
             process_result_queue_receiver.receive(),
-            Timer::after(embassy_time::Duration::from_millis(1000)),
+            Timer::at(relay_manager.calculate_next_timeout()),
         )
         .await
         {
@@ -174,6 +185,7 @@ pub(crate) async fn rx_handler_task(
                             received_packet.link_quality,
                             outgoing_message_queue_sender,
                             incomming_message_queue_sender,
+                            &mut relay_manager,
                             own_node_id,
                         );
 
@@ -189,8 +201,7 @@ pub(crate) async fn rx_handler_task(
             }
             Either3::Second(process_result) => {}
             Either3::Third(_) => {
-                // Timeout occurred, continue to next iteration
-                continue;
+                relay_manager.process_timed_tasks();
             }
         }
     }
@@ -201,11 +212,12 @@ fn process_message(
     last_link_quality: u8,
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
     incomming_message_queue_sender: IncommingMessageQueueSender,
+    relay_manager: &mut RelayManager<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>,
     own_node_id: u32,
 ) {
-    if message.message_type() == MessageType::RequestEcho as u8 {
-        let echo_response = RadioMessage::new_echo(own_node_id, message.sender_node_id(), last_link_quality);
-        let result = outgoing_message_queue_sender.try_send(echo_response);
+    let relay_result = relay_manager.process_message(&message, last_link_quality);
+    if let RelayResult::SendMessage(response_message) = relay_result {
+        let result = outgoing_message_queue_sender.try_send(response_message);
         if let Err(result_error) = result {
             let failed_message = match result_error {
                 TrySendError::Full(msg) => msg,

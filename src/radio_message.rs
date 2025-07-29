@@ -170,6 +170,34 @@ impl RadioMessage {
         RadioMessage { payload, length: 9 }
     }
 
+    pub fn new_echo_result(node_id: u32) -> Self {
+        // Create a new RadioMessage with a specific message type for echo results
+        let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
+        payload[0] = MessageType::EchoResult as u8;
+        let node_id_bytes = node_id.to_le_bytes();
+        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+
+        RadioMessage { payload, length: 5 }
+    }
+
+    pub(crate) fn add_echo_result_item(&mut self, neighbor_node: u32, send_link_quality: u8, receive_link_quality: u8) -> Result<(), ()> {
+        // Add an echo result item to the message payload
+        if self.length + 6 > RADIO_MAX_MESSAGE_SIZE {
+            return Err(());
+        }
+
+        let start_index = self.length;
+        let mut node_id_bytes = [0u8; 4];
+        node_id_bytes.copy_from_slice(&neighbor_node.to_le_bytes());
+        self.payload[start_index..start_index + 4].copy_from_slice(&node_id_bytes);
+        self.payload[start_index + 4] = send_link_quality;
+        self.payload[start_index + 5] = receive_link_quality;
+
+        self.length += 6;
+
+        Ok(())
+    }
+
     pub fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32, packet_number: u8) -> Self {
         // Create a new RadioMessage with a specific message type for block part requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
