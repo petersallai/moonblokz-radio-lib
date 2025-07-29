@@ -25,7 +25,7 @@ pub(crate) async fn rx_handler_task(
     rx_state_queue_sender: RxStateQueueSender,
     process_result_queue_receiver: ProcessResultQueueReceiver,
     echo_request_minimal_interval: u32,
-    echo_request_additional_interval_by_neighbor: u32,
+    echo_messages_target_interval: u8,
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
@@ -34,7 +34,7 @@ pub(crate) async fn rx_handler_task(
 
     loop {
         let relay_manager =
-            RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(echo_request_minimal_interval, echo_request_additional_interval_by_neighbor);
+            RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(echo_request_minimal_interval, echo_messages_target_interval, own_node_id);
 
         match select3(
             rx_packet_queue_receiver.receive(),

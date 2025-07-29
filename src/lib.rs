@@ -39,6 +39,59 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
+// Data structure for echo result items
+pub struct EchoResultItem {
+    pub neighbor_node: u32,
+    pub send_link_quality: u8,
+    pub receive_link_quality: u8,
+}
+
+// Iterator for echo result data
+pub struct EchoResultIterator<'a> {
+    payload: &'a [u8],
+    position: usize,
+    end_position: usize,
+}
+
+impl<'a> EchoResultIterator<'a> {
+    fn new(payload: &'a [u8], start_position: usize, end_position: usize) -> Self {
+        Self {
+            payload,
+            position: start_position,
+            end_position,
+        }
+    }
+}
+
+impl<'a> Iterator for EchoResultIterator<'a> {
+    type Item = EchoResultItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Each item needs 6 bytes: 4 for node_id + 1 for send quality + 1 for receive quality
+        if self.position + 6 > self.end_position {
+            return None;
+        }
+
+        // Extract neighbor_node (u32) from 4 bytes
+        let mut node_id_bytes = [0u8; 4];
+        node_id_bytes.copy_from_slice(&self.payload[self.position..self.position + 4]);
+        let neighbor_node = u32::from_le_bytes(node_id_bytes);
+
+        // Extract send and receive link qualities
+        let send_link_quality = self.payload[self.position + 4];
+        let receiving_link_quality = self.payload[self.position + 5];
+
+        // Advance position to the next item
+        self.position += 6;
+
+        Some(EchoResultItem {
+            neighbor_node,
+            send_link_quality,
+            receive_link_quality: receiving_link_quality,
+        })
+    }
+}
+
 //Hardware dependent constants, that affect compatibility of a node
 const RADIO_PACKET_SIZE: usize = 200;
 const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
@@ -58,7 +111,7 @@ pub struct RadioConfiguration {
     /// Delay in seconds between complete message transmissions
     pub delay_between_tx_messages: u8,
     pub echo_request_minimal_interval: u32,
-    pub echo_request_additional_interval_by_neighbor: u32,
+    pub echo_messages_target_interval: u8,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -115,7 +168,7 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, Criti
 type ProcessResultQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, process_result_queue_size>;
 
 #[cfg(feature = "embedded")]
-static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
+static PROCESS_RESULT_QUEUE: Channel<CriticalSectionRawMutex, RadioMessage, process_result_queue_size> = Channel::new();
 
 enum RxState {
     PACKETED_RX_IN_PROGRESS(u8, u8), // (packet_index, total_packet_count)
@@ -156,12 +209,13 @@ pub struct RadioMessage {
 enum MessageType {
     RequestEcho = 0x01,
     Echo = 0x02,
-    RequestFullBlock = 0x03,
-    RequestBlockPart = 0x04,
-    AddBlock = 0x05,
-    AddTransaction = 0x06,
-    GetMempoolState = 0x07,
-    Support = 0x08,
+    EchoResult = 0x03,
+    RequestFullBlock = 0x04,
+    RequestBlockPart = 0x05,
+    AddBlock = 0x06,
+    AddTransaction = 0x07,
+    GetMempoolState = 0x08,
+    Support = 0x09,
 }
 
 impl RadioMessage {
@@ -400,7 +454,7 @@ impl RadioMessage {
         self.length
     }
 
-    pub(crate) fn get_echo_data(&self) -> Option<(u8)> {
+    pub(crate) fn get_echo_data(&self) -> Option<(u32, u8)> {
         // Extract echo data from the message payload
         if self.message_type() != MessageType::Echo as u8 {
             return None;
@@ -410,8 +464,35 @@ impl RadioMessage {
         }
 
         let link_quality = self.payload[5];
+        let mut sender_node_id_bytes = [0u8; 4];
+        sender_node_id_bytes.copy_from_slice(&self.payload[1..5]);
+        let sender_node_id = u32::from_le_bytes(sender_node_id_bytes);
 
-        Some(link_quality)
+        Some((sender_node_id, link_quality))
+    }
+
+    /// Get an iterator over echo result data entries.
+    /// Each entry contains neighbor node ID, send link quality, and receiving link quality.
+    ///
+    /// # Example
+    /// ```rust
+    /// // Assuming you have a RadioMessage with EchoResult message type
+    /// if let Some(iterator) = message.get_echo_result_data_iterator() {
+    ///     for item in iterator {
+    ///         println!("Neighbor: {}, Send Quality: {}, Receive Quality: {}",
+    ///                  item.neighbor_node(), item.send_link_quality(), item.receiving_link_quality());
+    ///     }
+    /// }
+    /// ```
+    pub(crate) fn get_echo_result_data_iterator(&self) -> Option<EchoResultIterator> {
+        if self.message_type() != MessageType::EchoResult as u8 {
+            return None;
+        }
+        if self.length < 5 {
+            return None; // Not enough data for echo result
+        }
+
+        Some(EchoResultIterator::new(&self.payload, 5, self.length))
     }
 
     pub fn get_add_transaction_data(&self) -> Option<(u32, u32, &[u8])> {
@@ -611,7 +692,7 @@ impl RadioCommunicationManager {
             rx_state_queue.sender(),
             process_result_queue.receiver(),
             radio_config.echo_request_minimal_interval,
-            radio_config.echo_request_additional_interval_by_neighbor,
+            radio_config.echo_messages_target_interval,
             own_node_id,
             rng.next_u64(),
         ));
