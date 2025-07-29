@@ -57,12 +57,12 @@ pub(crate) async fn rx_handler_task(
                     let total_packet_count = rx_packet.total_packet_count() as usize;
 
                     if packet_index == total_packet_count - 1 {
-                        rx_state_queue_sender.try_send(RxState::PACKETED_RX_ENDED).unwrap_or_else(|_| {
+                        rx_state_queue_sender.try_send(RxState::PacketedRxEnded).unwrap_or_else(|_| {
                             log!(Level::Error, "Failed to send PACKETED_RX_ENDED state. The queue is full.");
                         });
                     } else {
                         rx_state_queue_sender
-                            .try_send(RxState::PACKETED_RX_IN_PROGRESS(packet_index as u8, total_packet_count as u8))
+                            .try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8))
                             .unwrap_or_else(|_| {
                                 log!(Level::Error, "Failed to send PACKETED_RX_IN_PROGRESS state. The queue is full.");
                             });

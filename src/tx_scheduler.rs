@@ -82,12 +82,12 @@ pub(crate) async fn tx_scheduler_task(
                 }
             }
             Either::Second(rxstate) => match rxstate {
-                RxState::PACKETED_RX_IN_PROGRESS(packet_index, total_packet_count) => {
+                RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
                     let new_delay_timeout =
                         Instant::now() + Duration::from_secs((total_packet_count as u64 + 1 - packet_index as u64) * delay_between_packets as u64);
                     rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
                 }
-                RxState::PACKETED_RX_ENDED => {
+                RxState::PacketedRxEnded => {
                     rx_state_delay_timeout = Instant::now();
                 }
             },
