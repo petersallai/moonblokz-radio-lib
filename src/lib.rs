@@ -116,11 +116,11 @@ type RxStateQueueSender = embassy_sync::channel::Sender<'static, CriticalSection
 static RX_STATE_QUEUE: RxStateQueue = Channel::new();
 
 const PROCESS_RESULT_QUEUE_SIZE: usize = 10;
-type ProcessResultQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, PROCESS_RESULT_QUEUE_SIZE>;
-type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
 
 #[cfg(feature = "embedded")]
-static PROCESS_RESULT_QUEUE: Channel<CriticalSectionRawMutex, RadioMessage, PROCESS_RESULT_QUEUE_SIZE> = Channel::new();
+static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 
 enum RxState {
     PacketedRxInProgress(u8, u8), // (packet_index, total_packet_count)
@@ -152,6 +152,16 @@ enum RxState {
 ///     }
 /// }
 /// ```
+
+pub enum MessageProcessingResult {
+    RequestedBlockNotFound(u32),                    //this node not has the block with the give sequence
+    RequestedBlockFound(RadioMessage),              // this node has the requested block
+    RequestedBlockPartFound(RadioMessage, u32, u8), // this node has the requested block part (RadioMessage, payload checksum, part_index)
+    NewBlockAdded(RadioMessage),                    // a new block has been added to the node
+    NewTransactionAdded(RadioMessage),              // a new transaction has been added to the node
+    SendReplyTransaction(RadioMessage),             // a reply transaction has been sent
+    NewSupportAdded(RadioMessage),                  // a new support has been added to the node
+}
 
 struct ReceivedPacket {
     packet: RadioPacket,

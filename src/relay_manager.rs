@@ -1,14 +1,16 @@
-use core::cmp::max;
+use core::cmp::{max, min};
 use embassy_time::{Duration, Instant};
 use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
-use crate::{CONNECTION_MATRIX_SIZE, MessageType, RadioMessage};
+use crate::MessageProcessingResult;
+use crate::{MessageType, RadioMessage};
 
 pub(crate) enum RelayResult {
     None,
     SendMessage(RadioMessage),
+    AlreadyHaveMessage,
 }
 
 struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
@@ -58,7 +60,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     }
 
     pub(crate) fn calculate_next_timeout(&self) -> Instant {
-        return self.next_echo_request_time;
+        return min(self.next_echo_request_time, self.echo_gathering_end_time.unwrap_or(Instant::MAX));
     }
 
     pub(crate) fn process_timed_tasks(&mut self) -> RelayResult {
@@ -70,7 +72,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             let echo_request_interval = max(
                 self.echo_messages_target_interval as u32 * message_count as u32,
                 self.echo_request_minimal_interval,
-            );
+            ) + self.rng.next_u32() % (self.echo_gathering_timeout as u32 * 60);
             self.echo_gathering_end_time = Some(Instant::now() + Duration::from_secs(self.echo_gathering_timeout as u64 * 60)); //multiply by 60 to convert minutes to seconds
 
             // Send an echo request to all connected nodes
@@ -101,7 +103,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         return RelayResult::None;
     }
 
-    pub(crate) fn process_message(&mut self, message: &RadioMessage, last_link_quality: u8) -> RelayResult {
+    pub(crate) fn process_received_message(&mut self, message: &RadioMessage, last_link_quality: u8) -> RelayResult {
         // find the connection matrix index for the sender node
         let mut sender_index_opt = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id());
         if sender_index_opt.is_none() {
@@ -184,5 +186,17 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             }
         }
         return RelayResult::None;
+    }
+
+    pub(crate) fn process_processing_result(&mut self, result: MessageProcessingResult) -> RelayResult {
+        match result {
+            MessageProcessingResult::RequestedBlockNotFound(sequence) => return RelayResult::None,
+            MessageProcessingResult::RequestedBlockFound(message) => return RelayResult::None,
+            MessageProcessingResult::RequestedBlockPartFound(message, payload_checksum, part_index) => return RelayResult::None,
+            MessageProcessingResult::NewBlockAdded(message) => return RelayResult::None,
+            MessageProcessingResult::NewTransactionAdded(message) => return RelayResult::None,
+            MessageProcessingResult::SendReplyTransaction(message) => return RelayResult::None,
+            MessageProcessingResult::NewSupportAdded(message) => return RelayResult::None,
+        }
     }
 }

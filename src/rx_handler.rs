@@ -199,9 +199,37 @@ pub(crate) async fn rx_handler_task(
                     }
                 }
             }
-            Either3::Second(process_result) => {}
+            Either3::Second(process_result) => {
+                if let RelayResult::SendMessage(response_message) = relay_manager.process_processing_result(process_result) {
+                    let result = outgoing_message_queue_sender.try_send(response_message);
+                    if let Err(result_error) = result {
+                        let failed_message = match result_error {
+                            TrySendError::Full(msg) => msg,
+                        };
+                        log!(
+                            Level::Warn,
+                            "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                            failed_message.message_type(),
+                            failed_message.sender_node_id(),
+                        );
+                    };
+                }
+            }
             Either3::Third(_) => {
-                relay_manager.process_timed_tasks();
+                if let RelayResult::SendMessage(response_message) = relay_manager.process_timed_tasks() {
+                    let result = outgoing_message_queue_sender.try_send(response_message);
+                    if let Err(result_error) = result {
+                        let failed_message = match result_error {
+                            TrySendError::Full(msg) => msg,
+                        };
+                        log!(
+                            Level::Warn,
+                            "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                            failed_message.message_type(),
+                            failed_message.sender_node_id(),
+                        );
+                    };
+                }
             }
         }
     }
@@ -215,29 +243,45 @@ fn process_message(
     relay_manager: &mut RelayManager<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>,
     own_node_id: u32,
 ) {
-    let relay_result = relay_manager.process_message(&message, last_link_quality);
-    if let RelayResult::SendMessage(response_message) = relay_result {
-        let result = outgoing_message_queue_sender.try_send(response_message);
-        if let Err(result_error) = result {
-            let failed_message = match result_error {
-                TrySendError::Full(msg) => msg,
-            };
+    let mut process_message = true;
+    let relay_result = relay_manager.process_received_message(&message, last_link_quality);
+
+    match relay_result {
+        RelayResult::None => {
             log!(
-                Level::Warn,
-                "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
-                failed_message.message_type(),
-                failed_message.sender_node_id(),
+                Level::Debug,
+                "No action needed for message: messagetype: {}, sender_node_id: {}",
+                message.message_type(),
+                message.sender_node_id()
             );
-        };
+        }
+        RelayResult::SendMessage(message) => {
+            let result = outgoing_message_queue_sender.try_send(message);
+            if let Err(result_error) = result {
+                let failed_message = match result_error {
+                    TrySendError::Full(msg) => msg,
+                };
+                log!(
+                    Level::Warn,
+                    "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                    failed_message.message_type(),
+                    failed_message.sender_node_id(),
+                );
+            };
+        }
+        RelayResult::AlreadyHaveMessage => {
+            process_message = false;
+        }
     }
 
-    if message.message_type() == MessageType::AddBlock as u8
+    if (message.message_type() == MessageType::AddBlock as u8
         || message.message_type() == MessageType::RequestFullBlock as u8
         || message.message_type() == MessageType::RequestBlockPart as u8
         || message.message_type() == MessageType::AddTransaction as u8
         || message.message_type() == MessageType::AddBlock as u8
         || message.message_type() == MessageType::GetMempoolState as u8
-        || message.message_type() == MessageType::Support as u8
+        || message.message_type() == MessageType::Support as u8)
+        && process_message
     {
         let result = incomming_message_queue_sender.try_send(message);
 

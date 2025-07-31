@@ -182,7 +182,8 @@ impl RadioMessage {
 
     pub(crate) fn add_echo_result_item(&mut self, neighbor_node: u32, send_link_quality: u8, receive_link_quality: u8) -> Result<(), ()> {
         // Add an echo result item to the message payload
-        if self.length + 6 > RADIO_MAX_MESSAGE_SIZE {
+        if self.length + 6 > RADIO_PACKET_SIZE {
+            //the message must fit into a single packet
             return Err(());
         }
 
