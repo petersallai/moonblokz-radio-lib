@@ -83,6 +83,7 @@ pub(crate) enum MessageType {
     Support = 0x09,
 }
 
+#[derive(Debug)]
 pub struct RadioMessage {
     pub(crate) payload: [u8; RADIO_MAX_MESSAGE_SIZE],
     pub(crate) length: usize,
@@ -449,3 +450,139 @@ impl RadioPacket {
         }
     }
 }
+
+impl PartialEq for RadioMessage {
+    fn eq(&self, other: &Self) -> bool {
+        // Check message type equality
+        if self.message_type() != other.message_type() {
+            return false;
+        }
+
+        // Check sender_node_id for all message types
+        if self.sender_node_id() != other.sender_node_id() {
+            return false;
+        }
+
+        // Now check the specific fields based on the message type
+        match self.message_type() {
+            msg_type if msg_type == MessageType::RequestEcho as u8 => true,
+            msg_type if msg_type == MessageType::Echo as u8 => {
+                // Extract target_node from both messages
+                if self.length < 9 || other.length < 9 {
+                    return false;
+                }
+                let self_target_node = u32::from_le_bytes([self.payload[5], self.payload[6], self.payload[7], self.payload[8]]);
+                let other_target_node = u32::from_le_bytes([other.payload[5], other.payload[6], other.payload[7], other.payload[8]]);
+
+                if self_target_node != other_target_node {
+                    return false;
+                }
+
+                // Extract link_quality from both messages
+                if self.length < 10 || other.length < 10 {
+                    return false;
+                }
+                self.payload[9] == other.payload[9]
+            }
+            msg_type if msg_type == MessageType::EchoResult as u8 => {
+                // Check full payload
+                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+            }
+            msg_type if msg_type == MessageType::RequestFullBlock as u8 => {
+                // Extract sequence from both messages
+                if self.length < 9 || other.length < 9 {
+                    return false;
+                }
+                let self_sequence = u32::from_le_bytes([self.payload[5], self.payload[6], self.payload[7], self.payload[8]]);
+                let other_sequence = u32::from_le_bytes([other.payload[5], other.payload[6], other.payload[7], other.payload[8]]);
+
+                self_sequence == other_sequence
+            }
+            msg_type if msg_type == MessageType::RequestBlockPart as u8 => {
+                // Extract sequence
+                if self.length < 9 || other.length < 9 {
+                    return false;
+                }
+                let self_sequence = u32::from_le_bytes([self.payload[5], self.payload[6], self.payload[7], self.payload[8]]);
+                let other_sequence = u32::from_le_bytes([other.payload[5], other.payload[6], other.payload[7], other.payload[8]]);
+
+                if self_sequence != other_sequence {
+                    return false;
+                }
+
+                // Extract payload_checksum
+                if self.length < 13 || other.length < 13 {
+                    return false;
+                }
+                let self_checksum = u32::from_le_bytes([self.payload[9], self.payload[10], self.payload[11], self.payload[12]]);
+                let other_checksum = u32::from_le_bytes([other.payload[9], other.payload[10], other.payload[11], other.payload[12]]);
+
+                if self_checksum != other_checksum {
+                    return false;
+                }
+
+                // Extract packet_number
+                if self.length < 14 || other.length < 14 {
+                    return false;
+                }
+                self.payload[13] == other.payload[13]
+            }
+            msg_type if msg_type == MessageType::AddBlock as u8 => {
+                // Extract sequence
+                if self.length < 9 || other.length < 9 {
+                    return false;
+                }
+                let self_sequence = u32::from_le_bytes([self.payload[5], self.payload[6], self.payload[7], self.payload[8]]);
+                let other_sequence = u32::from_le_bytes([other.payload[5], other.payload[6], other.payload[7], other.payload[8]]);
+
+                if self_sequence != other_sequence {
+                    return false;
+                }
+
+                // Extract payload_checksum
+                if self.length < 13 || other.length < 13 {
+                    return false;
+                }
+                let self_checksum = u32::from_le_bytes([self.payload[9], self.payload[10], self.payload[11], self.payload[12]]);
+                let other_checksum = u32::from_le_bytes([other.payload[9], other.payload[10], other.payload[11], other.payload[12]]);
+
+                self_checksum == other_checksum
+            }
+            msg_type if msg_type == MessageType::AddTransaction as u8 => {
+                // Extract anchor_sequence
+                if self.length < 9 || other.length < 9 {
+                    return false;
+                }
+                let self_anchor_sequence = u32::from_le_bytes([self.payload[5], self.payload[6], self.payload[7], self.payload[8]]);
+                let other_anchor_sequence = u32::from_le_bytes([other.payload[5], other.payload[6], other.payload[7], other.payload[8]]);
+
+                if self_anchor_sequence != other_anchor_sequence {
+                    return false;
+                }
+
+                // Extract payload_checksum
+                if self.length < 13 || other.length < 13 {
+                    return false;
+                }
+                let self_checksum = u32::from_le_bytes([self.payload[9], self.payload[10], self.payload[11], self.payload[12]]);
+                let other_checksum = u32::from_le_bytes([other.payload[9], other.payload[10], other.payload[11], other.payload[12]]);
+
+                self_checksum == other_checksum
+            }
+            msg_type if msg_type == MessageType::GetMempoolState as u8 => {
+                // Check full payload
+                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+            }
+            msg_type if msg_type == MessageType::Support as u8 => {
+                // Check full payload
+                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+            }
+            _ => {
+                // Unknown message type
+                false
+            }
+        }
+    }
+}
+
+impl Eq for RadioMessage {}

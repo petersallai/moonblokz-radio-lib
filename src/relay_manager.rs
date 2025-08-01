@@ -19,6 +19,18 @@ struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
     nodes_connection: [u8; CONNECTION_MATRIX_SIZE],
 }
 
+pub struct WaitPool<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> {
+    items: [Option<WaitPoolItem<CONNECTION_MATRIX_SIZE>>; WAIT_POOL_SIZE],
+}
+
+impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<WAIT_POOL_SIZE, CONNECTION_MATRIX_SIZE> {
+    pub fn new() -> Self {
+        Self {
+            items: [const { None }; WAIT_POOL_SIZE],
+        }
+    }
+}
+
 pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> {
     connection_matrix: [[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
     connection_matrix_nodes: [u32; CONNECTION_MATRIX_SIZE],
