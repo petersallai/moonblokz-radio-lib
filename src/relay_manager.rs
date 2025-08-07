@@ -5,6 +5,7 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 use crate::MessageProcessingResult;
+use crate::ScoringMatrix;
 use crate::{MessageType, RadioMessage};
 
 pub(crate) enum RelayResult {
@@ -13,10 +14,34 @@ pub(crate) enum RelayResult {
     AlreadyHaveMessage,
 }
 
+fn calc_category(value: u8, poor_limit: u8, excellent_limit: u8) -> u8 {
+    if value == 0 {
+        0 // Zero
+    } else if value < poor_limit {
+        1 // Poor
+    } else if value < excellent_limit {
+        2 // Fair
+    } else {
+        3 // Excellent
+    }
+}
+
 struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
     message: RadioMessage,
     activation_time: u64,
     nodes_connection: [u8; CONNECTION_MATRIX_SIZE],
+}
+
+impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
+    fn calculate_score(&self, own_connections: &[u8; CONNECTION_MATRIX_SIZE], scoring_matrix: &ScoringMatrix) -> u32 {
+        let mut score: u32 = 0;
+        for i in 0..CONNECTION_MATRIX_SIZE {
+            let network_category = calc_category(self.nodes_connection[i], scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
+            let own_category = calc_category(own_connections[i], scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
+            score += scoring_matrix.matrix[network_category as usize][own_category as usize] as u32;
+        }
+        score
+    }
 }
 
 pub struct WaitPool<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> {
@@ -29,18 +54,25 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             items: [const { None }; WAIT_POOL_SIZE],
         }
     }
+
+    fn contains_message_or_reply(&self, message: &RadioMessage) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.as_ref().map_or(false, |i| &i.message == message || i.message.is_reply_to(message)))
+    }
 }
 
 pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> {
     connection_matrix: [[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
     connection_matrix_nodes: [u32; CONNECTION_MATRIX_SIZE],
     connected_nodes_count: usize,
-    wait_pool: [Option<WaitPoolItem<WAIT_POOL_SIZE>>; WAIT_POOL_SIZE],
+    wait_pool: WaitPool<WAIT_POOL_SIZE, CONNECTION_MATRIX_SIZE>,
     next_echo_request_time: Instant,
     echo_gathering_end_time: Option<Instant>,
     echo_request_minimal_interval: u32,
     echo_messages_target_interval: u8,
     echo_gathering_timeout: u8,
+    scoring_matrix: ScoringMatrix,
     own_node_id: u32,
     rng: WyRand,
 }
@@ -50,6 +82,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         echo_request_minimal_interval: u32,
         echo_messages_target_interval: u8,
         echo_gathering_timeout: u8,
+        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Self {
@@ -58,12 +91,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             connection_matrix: [[0; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
             connection_matrix_nodes: [0; CONNECTION_MATRIX_SIZE],
             connected_nodes_count: 1, // Start with one node (own node)
-            wait_pool: [const { None }; WAIT_POOL_SIZE],
+            wait_pool: WaitPool::new(),
             next_echo_request_time: Instant::now() + Duration::from_secs(rng.next_u64() % echo_request_minimal_interval as u64),
             echo_gathering_end_time: None,
             echo_request_minimal_interval,
             echo_messages_target_interval,
             echo_gathering_timeout,
+            scoring_matrix,
             own_node_id,
             rng,
         };
@@ -197,6 +231,16 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 }
             }
         }
+
+        if message.message_type() == MessageType::AddBlock as u8
+            || message.message_type() == MessageType::AddTransaction as u8
+            || message.message_type() == MessageType::Support as u8
+        {
+            if self.wait_pool.contains_message_or_reply(message) {
+                return RelayResult::AlreadyHaveMessage;
+            }
+        }
+
         return RelayResult::None;
     }
 

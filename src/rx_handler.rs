@@ -1,5 +1,5 @@
 use crate::relay_manager::{self, RelayResult};
-use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState, WAIT_POOL_SIZE};
+use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
@@ -31,22 +31,22 @@ pub(crate) async fn rx_handler_task(
     echo_request_minimal_interval: u32,
     echo_messages_target_interval: u8,
     echo_gathering_timeout: u8,
+    scoring_matrix: ScoringMatrix,
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
     let mut packet_buffer: [Option<PacketBufferItem>; INCOMMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMMING_PACKET_BUFFER_SIZE];
     let mut packet_check_buffer: [u8; INCOMMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMMING_PACKET_BUFFER_SIZE];
     let mut rng = WyRand::seed_from_u64(rng_seed);
-
+    let mut relay_manager = RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(
+        echo_request_minimal_interval,
+        echo_messages_target_interval,
+        echo_gathering_timeout,
+        scoring_matrix,
+        own_node_id,
+        rng.next_u64(),
+    );
     loop {
-        let mut relay_manager = RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(
-            echo_request_minimal_interval,
-            echo_messages_target_interval,
-            echo_gathering_timeout,
-            own_node_id,
-            rng.next_u64(),
-        );
-
         match select3(
             rx_packet_queue_receiver.receive(),
             process_result_queue_receiver.receive(),

@@ -121,6 +121,12 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, Criti
 
 #[cfg(feature = "embedded")]
 static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
+struct ScoringMatrix {
+    matrix: [[u8; 4]; 4],
+    poor_limit: u8,
+    excellent_limit: u8,
+    relay_limit: u8,
+}
 
 enum RxState {
     PacketedRxInProgress(u8, u8), // (packet_index, total_packet_count)
@@ -197,6 +203,7 @@ impl RadioCommunicationManager {
         radio_config: RadioConfiguration,
         spawner: Spawner,
         radio_device: RadioDevice,
+        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
@@ -210,6 +217,7 @@ impl RadioCommunicationManager {
             &TX_PACKET_QUEUE,
             &RX_PACKET_QUEUE,
             &RX_STATE_QUEUE,
+            scoring_matrix,
             own_node_id,
             rng_seed,
         );
@@ -221,6 +229,7 @@ impl RadioCommunicationManager {
         radio_config: RadioConfiguration,
         spawner: Spawner,
         radio_device: RadioDevice,
+        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
@@ -251,6 +260,7 @@ impl RadioCommunicationManager {
             tx_packet_queue_static,
             rx_packet_queue_static,
             rx_state_queue_static,
+            scoring_matrix,
             own_node_id,
             rng_seed,
         );
@@ -267,6 +277,7 @@ impl RadioCommunicationManager {
         tx_packet_queue: &'static TXPacketQueue,
         rx_packet_queue: &'static RxPacketQueue,
         rx_state_queue: &'static RxStateQueue,
+        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
@@ -306,6 +317,7 @@ impl RadioCommunicationManager {
             radio_config.echo_request_minimal_interval,
             radio_config.echo_messages_target_interval,
             radio_config.echo_gathering_timeout,
+            scoring_matrix,
             own_node_id,
             rng.next_u64(),
         ));

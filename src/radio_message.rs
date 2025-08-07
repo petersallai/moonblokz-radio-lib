@@ -1,3 +1,5 @@
+use core::iter;
+
 use crate::{RADIO_MAX_MESSAGE_SIZE, RADIO_PACKET_SIZE};
 
 // Data structure for echo result items
@@ -414,6 +416,153 @@ impl RadioMessage {
 
         Some((anchor_sequence, checksum, &self.payload[13..self.length]))
     }
+
+    pub fn sequence(&self) -> Option<u32> {
+        if self.message_type() != MessageType::AddBlock as u8
+            && self.message_type() != MessageType::RequestFullBlock as u8
+            && self.message_type() != MessageType::Support as u8
+        {
+            return None; // Only AddBlock and AddTransaction messages have a sequence
+        }
+
+        // Extract the sequence number from the message payload
+        if self.length < 9 {
+            return None; // Not enough data for sequence
+        }
+        let mut sequence_bytes = [0u8; 4];
+        sequence_bytes.copy_from_slice(&self.payload[5..9]);
+        Some(u32::from_le_bytes(sequence_bytes))
+    }
+
+    pub fn is_reply_to(&self, message: &RadioMessage) -> bool {
+        if self.message_type() == MessageType::Echo as u8 {
+            if message.message_type() != MessageType::RequestEcho as u8 {
+                return false; // Only Echo messages can reply to RequestEcho
+            }
+            // For Echo messages, check if the sender node ID matches
+            return self.sender_node_id() == message.sender_node_id();
+        }
+
+        if self.message_type() == MessageType::AddBlock as u8 {
+            if message.message_type() != MessageType::RequestFullBlock as u8 {
+                return false; // Only AddBlock messages can reply to RequestFullBlock
+            }
+            return message.sequence() == self.sequence();
+        }
+
+        if self.message_type() == MessageType::AddTransaction as u8 {
+            if message.message_type() != MessageType::GetMempoolState as u8 {
+                return false; // Only AddTransaction messages can reply to GetMempoolState
+            }
+
+            let (anchor_sequence, checksum, _) = self.get_add_transaction_data().unwrap();
+
+            if let Some(mempool_data_iterator) = message.get_mempool_data_iterator() {
+                // Iterate through the mempool data entries
+                // Each entry contains anchor sequence and transaction payload checksum
+                // Check if the mempool item matches the current message
+                for mempool_item in mempool_data_iterator {
+                    // Check if the mempool item matches the current message
+                    if mempool_item.anchor_sequence() == anchor_sequence && mempool_item.transaction_payload_checksum() == checksum {
+                        return false; // Found a matching mempool item
+                    }
+                }
+                // If no matching mempool item was found the message can be considered a reply
+                // to the GetMempoolState request
+                return true;
+            }
+        }
+        // For other message types, we do not consider them as replies
+        return false;
+    }
+
+    /// Get an iterator over mempool data entries.
+    /// Each entry contains anchor sequence and transaction payload checksum.
+    ///
+    /// # Example
+    /// ```rust
+    /// // Assuming you have a RadioMessage with GetMempoolState message type
+    /// if let Some(iterator) = message.get_mempool_data_iterator() {
+    ///     for item in iterator {
+    ///         println!("Anchor Sequence: {}, Transaction Checksum: {}",
+    ///                  item.anchor_sequence(), item.transaction_payload_checksum());
+    ///     }
+    /// }
+    /// ```
+    pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator> {
+        if self.message_type() != MessageType::GetMempoolState as u8 {
+            return None;
+        }
+        if self.length < 5 {
+            return None; // Not enough data for mempool state (at least message type + sender_node)
+        }
+
+        Some(MempoolIterator::new(&self.payload, 5, self.length))
+    }
+}
+
+// Data structure for mempool items
+pub struct MempoolItem {
+    pub anchor_sequence: u32,
+    pub transaction_payload_checksum: u32,
+}
+
+impl MempoolItem {
+    /// Get the anchor sequence
+    pub fn anchor_sequence(&self) -> u32 {
+        self.anchor_sequence
+    }
+
+    /// Get the transaction payload checksum
+    pub fn transaction_payload_checksum(&self) -> u32 {
+        self.transaction_payload_checksum
+    }
+}
+
+// Iterator for mempool data
+pub struct MempoolIterator<'a> {
+    payload: &'a [u8],
+    position: usize,
+    end_position: usize,
+}
+
+impl<'a> MempoolIterator<'a> {
+    pub(crate) fn new(payload: &'a [u8], start_position: usize, end_position: usize) -> Self {
+        Self {
+            payload,
+            position: start_position,
+            end_position,
+        }
+    }
+}
+
+impl<'a> Iterator for MempoolIterator<'a> {
+    type Item = MempoolItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Each item needs 8 bytes: 4 for anchor_sequence + 4 for transaction_payload_checksum
+        if self.position + 8 > self.end_position {
+            return None;
+        }
+
+        // Extract anchor_sequence (u32) from 4 bytes
+        let mut anchor_sequence_bytes = [0u8; 4];
+        anchor_sequence_bytes.copy_from_slice(&self.payload[self.position..self.position + 4]);
+        let anchor_sequence = u32::from_le_bytes(anchor_sequence_bytes);
+
+        // Extract transaction_payload_checksum (u32) from next 4 bytes
+        let mut checksum_bytes = [0u8; 4];
+        checksum_bytes.copy_from_slice(&self.payload[self.position + 4..self.position + 8]);
+        let transaction_payload_checksum = u32::from_le_bytes(checksum_bytes);
+
+        // Advance position to the next item
+        self.position += 8;
+
+        Some(MempoolItem {
+            anchor_sequence,
+            transaction_payload_checksum,
+        })
+    }
 }
 
 pub struct RadioPacket {
@@ -453,20 +602,21 @@ impl RadioPacket {
 
 impl PartialEq for RadioMessage {
     fn eq(&self, other: &Self) -> bool {
-        // Check message type equality
+        // Check message type equality first
         if self.message_type() != other.message_type() {
             return false;
         }
 
-        // Check sender_node_id for all message types
-        if self.sender_node_id() != other.sender_node_id() {
-            return false;
-        }
-
-        // Now check the specific fields based on the message type
+        // Check the specific fields based on the message type
+        // Note: sender_node_id is ignored for equality except for RequestEcho messages
         match self.message_type() {
-            msg_type if msg_type == MessageType::RequestEcho as u8 => true,
+            msg_type if msg_type == MessageType::RequestEcho as u8 => {
+                // RequestEcho is an exception - we must check sender_node_id
+                self.sender_node_id() == other.sender_node_id()
+            }
             msg_type if msg_type == MessageType::Echo as u8 => {
+                // Check target_node and link_quality (excluding sender_node_id)
+
                 // Extract target_node from both messages
                 if self.length < 9 || other.length < 9 {
                     return false;
@@ -485,10 +635,26 @@ impl PartialEq for RadioMessage {
                 self.payload[9] == other.payload[9]
             }
             msg_type if msg_type == MessageType::EchoResult as u8 => {
-                // Check full payload
-                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+                // Check message type and echo result data (excluding sender_node_id in bytes 1-4)
+                if self.length != other.length {
+                    return false;
+                }
+
+                // Compare message type (byte 0)
+                if self.payload[0] != other.payload[0] {
+                    return false;
+                }
+
+                // Compare echo result data (from byte 5 onwards, skipping sender_node_id in bytes 1-4)
+                if self.length > 5 {
+                    self.payload[5..self.length] == other.payload[5..other.length]
+                } else {
+                    true // Only message type + sender_node_id, so equal since we ignore sender_node_id
+                }
             }
             msg_type if msg_type == MessageType::RequestFullBlock as u8 => {
+                // Check sequence only (excluding sender_node_id)
+
                 // Extract sequence from both messages
                 if self.length < 9 || other.length < 9 {
                     return false;
@@ -499,6 +665,8 @@ impl PartialEq for RadioMessage {
                 self_sequence == other_sequence
             }
             msg_type if msg_type == MessageType::RequestBlockPart as u8 => {
+                // Check sequence, payload_checksum, packet_number (excluding sender_node_id)
+
                 // Extract sequence
                 if self.length < 9 || other.length < 9 {
                     return false;
@@ -528,6 +696,8 @@ impl PartialEq for RadioMessage {
                 self.payload[13] == other.payload[13]
             }
             msg_type if msg_type == MessageType::AddBlock as u8 => {
+                // Check sequence and payload_checksum (excluding sender_node_id)
+
                 // Extract sequence
                 if self.length < 9 || other.length < 9 {
                     return false;
@@ -549,6 +719,8 @@ impl PartialEq for RadioMessage {
                 self_checksum == other_checksum
             }
             msg_type if msg_type == MessageType::AddTransaction as u8 => {
+                // Check anchor_sequence and payload_checksum (excluding sender_node_id)
+
                 // Extract anchor_sequence
                 if self.length < 9 || other.length < 9 {
                     return false;
@@ -570,12 +742,40 @@ impl PartialEq for RadioMessage {
                 self_checksum == other_checksum
             }
             msg_type if msg_type == MessageType::GetMempoolState as u8 => {
-                // Check full payload
-                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+                // Check message type and mempool data (excluding sender_node_id in bytes 1-4)
+                if self.length != other.length {
+                    return false;
+                }
+
+                // Compare message type (byte 0)
+                if self.payload[0] != other.payload[0] {
+                    return false;
+                }
+
+                // Compare mempool data (from byte 5 onwards, skipping sender_node_id in bytes 1-4)
+                if self.length > 5 {
+                    self.payload[5..self.length] == other.payload[5..other.length]
+                } else {
+                    true // Only message type + sender_node_id, so equal since we ignore sender_node_id
+                }
             }
             msg_type if msg_type == MessageType::Support as u8 => {
-                // Check full payload
-                self.length == other.length && self.payload[..self.length] == other.payload[..other.length]
+                // Check message type and support data (excluding sender_node_id in bytes 1-4)
+                if self.length != other.length {
+                    return false;
+                }
+
+                // Compare message type (byte 0)
+                if self.payload[0] != other.payload[0] {
+                    return false;
+                }
+
+                // Compare support data (from byte 5 onwards, skipping sender_node_id in bytes 1-4)
+                if self.length > 5 {
+                    self.payload[5..self.length] == other.payload[5..other.length]
+                } else {
+                    true // Only message type + sender_node_id, so equal since we ignore sender_node_id
+                }
             }
             _ => {
                 // Unknown message type
