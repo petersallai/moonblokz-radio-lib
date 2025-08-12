@@ -48,8 +48,12 @@ pub(crate) async fn tx_scheduler_task(
                 // Calculate the time since last transmission
                 let elapsed = last_tx_time.elapsed();
 
-                // If not enough time has passed, wait for the remaining time
-                let remaining_message_delay = delay_between_messages_duration - elapsed;
+                // If not enough time has passed, wait for the remaining time (saturating)
+                let remaining_message_delay = if elapsed >= delay_between_messages_duration {
+                    Duration::from_secs(0)
+                } else {
+                    delay_between_messages_duration - elapsed
+                };
 
                 let remaining_rx_state_timeout = rx_state_delay_timeout.saturating_duration_since(Instant::now());
 
@@ -61,9 +65,10 @@ pub(crate) async fn tx_scheduler_task(
                     Timer::after(remaining_delay).await;
                 }
 
-                for i in 0..message.get_packet_count() {
+                let packet_count = message.get_packet_count();
+                for i in 0..packet_count {
                     // Get the packet to send
-                    log!(log::Level::Debug, "Sending packet {}/{} of message ", i + 1, message.get_packet_count());
+                    log!(log::Level::Debug, "Sending packet {}/{}", i + 1, packet_count);
                     if let Some(packet) = message.get_packet(i) {
                         // Attempt to send the packet to the radio device
                         match radio_device_sender.try_send(packet) {
@@ -83,8 +88,8 @@ pub(crate) async fn tx_scheduler_task(
             }
             Either::Second(rxstate) => match rxstate {
                 RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
-                    let new_delay_timeout =
-                        Instant::now() + Duration::from_secs((total_packet_count as u64 + 1 - packet_index as u64) * delay_between_packets as u64);
+                    let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
+                    let new_delay_timeout = Instant::now() + Duration::from_secs(remaining_packets * delay_between_packets as u64);
                     rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
                 }
                 RxState::PacketedRxEnded => {

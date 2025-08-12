@@ -1,10 +1,11 @@
 use crate::RxPacketQueueSender;
 use crate::TxPacketQueueReceiver;
-use log::log;
+use log::{Level, log};
 
 #[cfg_attr(feature = "std", embassy_executor::task(pool_size = 10))]
 #[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
 pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, _rng_seed: u64) -> ! {
+    log!(Level::Info, "Echo radio device task started");
     radio_device.run(tx_receiver, rx_sender).await
 }
 
@@ -17,10 +18,17 @@ impl RadioDevice {
     async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender) -> ! {
         loop {
             let packet = tx_receiver.receive().await;
-            let _ = rx_sender.try_send(crate::ReceivedPacket {
-                packet: packet,
-                link_quality: 127,
-            });
+            match rx_sender.try_send(crate::ReceivedPacket { packet, link_quality: 63 }) {
+                Ok(_) => {}
+                Err(embassy_sync::channel::TrySendError::Full(received_packet)) => {
+                    // Backpressure: drop echoed packet and log
+                    log!(
+                        Level::Warn,
+                        "RX queue full, dropping echoed packet. type: {}",
+                        received_packet.packet.message_type()
+                    );
+                }
+            }
         }
     }
 }

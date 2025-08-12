@@ -50,7 +50,7 @@ const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
 
 //Hardware dependent constants, that only affect efficiency of a node, but does not result incompatibility
 const CONNECTION_MATRIX_SIZE: usize = 100;
-const INCOMMING_PACKET_BUFFER_SIZE: usize = 50;
+const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 const WAIT_POOL_SIZE: usize = 10;
 
 /// Configuration for radio transmission timing
@@ -65,6 +65,7 @@ pub struct RadioConfiguration {
     pub echo_request_minimal_interval: u32,
     pub echo_messages_target_interval: u8,
     pub echo_gathering_timeout: u8,
+    pub relay_position_delay: u8,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -76,20 +77,20 @@ pub enum ReceiveMessageError {
 }
 
 const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 10;
-type OutgoingMessageQeueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
+type OutgoingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
 type OutgoingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
 type OutgoingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
 
 #[cfg(feature = "embedded")]
-static OUTGOING_MESSAGE_QUEUE: OutgoingMessageQeueue = Channel::new();
+static OUTGOING_MESSAGE_QUEUE: OutgoingMessageQueue = Channel::new();
 
-const INCOMMING_MESSAGE_QUEUE_SIZE: usize = 10;
-type IncommingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, INCOMMING_MESSAGE_QUEUE_SIZE>;
-type IncommingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, INCOMMING_MESSAGE_QUEUE_SIZE>;
-type IncommingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, INCOMMING_MESSAGE_QUEUE_SIZE>;
+const INCOMING_MESSAGE_QUEUE_SIZE: usize = 10;
+type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
 
 #[cfg(feature = "embedded")]
-static INCOMMING_MESSAGE_QUEUE: IncommingMessageQueue = Channel::new();
+static INCOMING_MESSAGE_QUEUE: IncomingMessageQueue = Channel::new();
 
 const TX_PACKET_QUEUE_SIZE: usize = 16;
 type TXPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
@@ -121,11 +122,11 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, Criti
 
 #[cfg(feature = "embedded")]
 static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
-struct ScoringMatrix {
+pub struct ScoringMatrix {
     matrix: [[u8; 4]; 4],
     poor_limit: u8,
     excellent_limit: u8,
-    relay_limit: u8,
+    relay_score_limit: u8,
 }
 
 enum RxState {
@@ -177,9 +178,8 @@ struct ReceivedPacket {
 enum RadioCommunicationManagerState {
     Uninitialized,
     Initialized {
-        radio_config: RadioConfiguration,
         outgoing_message_queue_sender: OutgoingMessageQueueSender,
-        incomming_message_queue_receiver: IncommingMessageQueueReceiver,
+        incoming_message_queue_receiver: IncomingMessageQueueReceiver,
     },
 }
 
@@ -212,7 +212,7 @@ impl RadioCommunicationManager {
             spawner,
             radio_device,
             &OUTGOING_MESSAGE_QUEUE,
-            &INCOMMING_MESSAGE_QUEUE,
+            &INCOMING_MESSAGE_QUEUE,
             &PROCESS_RESULT_QUEUE,
             &TX_PACKET_QUEUE,
             &RX_PACKET_QUEUE,
@@ -233,11 +233,11 @@ impl RadioCommunicationManager {
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
-        let outgoing_message_queue_temp: OutgoingMessageQeueue = Channel::new();
-        let outgoing_message_queue_static: &'static OutgoingMessageQeueue = Box::leak(Box::new(outgoing_message_queue_temp));
+        let outgoing_message_queue_temp: OutgoingMessageQueue = Channel::new();
+        let outgoing_message_queue_static: &'static OutgoingMessageQueue = Box::leak(Box::new(outgoing_message_queue_temp));
 
-        let incomming_message_queue_temp: IncommingMessageQueue = Channel::new();
-        let incomming_message_queue_static: &'static IncommingMessageQueue = Box::leak(Box::new(incomming_message_queue_temp));
+        let incoming_message_queue_temp: IncomingMessageQueue = Channel::new();
+        let incoming_message_queue_static: &'static IncomingMessageQueue = Box::leak(Box::new(incoming_message_queue_temp));
 
         let tx_packet_queue_temp: TXPacketQueue = Channel::new();
         let tx_packet_queue_static: &'static TXPacketQueue = Box::leak(Box::new(tx_packet_queue_temp));
@@ -255,7 +255,7 @@ impl RadioCommunicationManager {
             spawner,
             radio_device,
             outgoing_message_queue_static,
-            incomming_message_queue_static,
+            incoming_message_queue_static,
             process_result_queue_static,
             tx_packet_queue_static,
             rx_packet_queue_static,
@@ -271,8 +271,8 @@ impl RadioCommunicationManager {
         radio_config: RadioConfiguration,
         spawner: Spawner,
         radio_device: RadioDevice,
-        outgoing_message_queue: &'static OutgoingMessageQeueue,
-        incomming_message_queue: &'static IncommingMessageQueue,
+        outgoing_message_queue: &'static OutgoingMessageQueue,
+        incoming_message_queue: &'static IncomingMessageQueue,
         process_result_queue: &'static ProcessResultQueue,
         tx_packet_queue: &'static TXPacketQueue,
         rx_packet_queue: &'static RxPacketQueue,
@@ -295,7 +295,7 @@ impl RadioCommunicationManager {
         }
         log!(log::Level::Debug, "Radio device task spawned");
 
-        let tx_scheduler_task_result = spawner.spawn(crate::tx_scheduler_task(
+        let tx_scheduler_task_result = spawner.spawn(tx_scheduler_task(
             outgoing_message_queue.receiver(),
             rx_state_queue.receiver(),
             tx_packet_queue.sender(),
@@ -309,7 +309,7 @@ impl RadioCommunicationManager {
         log!(log::Level::Debug, "TX Scheduler task spawned");
 
         let rx_handler_task_result = spawner.spawn(rx_handler::rx_handler_task(
-            incomming_message_queue.sender(),
+            incoming_message_queue.sender(),
             outgoing_message_queue.sender(),
             rx_packet_queue.receiver(),
             rx_state_queue.sender(),
@@ -317,6 +317,7 @@ impl RadioCommunicationManager {
             radio_config.echo_request_minimal_interval,
             radio_config.echo_messages_target_interval,
             radio_config.echo_gathering_timeout,
+            radio_config.relay_position_delay,
             scoring_matrix,
             own_node_id,
             rng.next_u64(),
@@ -328,9 +329,8 @@ impl RadioCommunicationManager {
         log!(log::Level::Info, "Radio communication initialized");
 
         self.state = RadioCommunicationManagerState::Initialized {
-            radio_config,
             outgoing_message_queue_sender: outgoing_message_queue.sender(),
-            incomming_message_queue_receiver: incomming_message_queue.receiver(),
+            incoming_message_queue_receiver: incoming_message_queue.receiver(),
         };
         Ok(())
     }
@@ -349,16 +349,16 @@ impl RadioCommunicationManager {
     }
 
     pub async fn receive_message(&self) -> Result<RadioMessage, ReceiveMessageError> {
-        let incomming_message_queue_receiver = match &self.state {
+        let incoming_message_queue_receiver = match &self.state {
             RadioCommunicationManagerState::Uninitialized => {
                 return Err(ReceiveMessageError::NotInited);
             }
             RadioCommunicationManagerState::Initialized {
-                incomming_message_queue_receiver,
+                incoming_message_queue_receiver,
                 ..
-            } => incomming_message_queue_receiver,
+            } => incoming_message_queue_receiver,
         };
-        return Ok(incomming_message_queue_receiver.receive().await);
+        return Ok(incoming_message_queue_receiver.receive().await);
     }
 
     pub fn report_message_processing_status(&self, _message: &RadioMessage, _success: bool) {

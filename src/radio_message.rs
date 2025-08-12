@@ -1,5 +1,3 @@
-use core::iter;
-
 use crate::{RADIO_MAX_MESSAGE_SIZE, RADIO_PACKET_SIZE};
 
 // Data structure for echo result items
@@ -81,7 +79,7 @@ pub(crate) enum MessageType {
     RequestBlockPart = 0x05,
     AddBlock = 0x06,
     AddTransaction = 0x07,
-    GetMempoolState = 0x08,
+    RequestNewMempoolItem = 0x08,
     Support = 0x09,
 }
 
@@ -97,13 +95,14 @@ impl RadioMessage {
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
             // Handle AddBlock and AddTransaction messages
             let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
-            payload[0] = message_type;
             payload[0..13].copy_from_slice(&packet.data[0..13]);
-            payload[13..packet.length - 2].copy_from_slice(&packet.data[15..packet.length]);
+            // Skip the 2 packet meta bytes at positions 13 and 14 in the packet
+            payload[13..13 + (packet.length - 15)].copy_from_slice(&packet.data[15..packet.length]);
 
             RadioMessage {
                 payload,
-                length: packet.length + 1,
+                // 13 bytes header + actual payload (packet.length - 15)
+                length: 13 + (packet.length - 15),
             }
         } else {
             let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
@@ -153,7 +152,7 @@ impl RadioMessage {
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::Echo as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
         let target_node_id_bytes = target_node_id.to_le_bytes();
         payload[5..5 + target_node_id_bytes.len()].copy_from_slice(&target_node_id_bytes);
         payload[5 + target_node_id_bytes.len()] = link_quality;
@@ -166,7 +165,7 @@ impl RadioMessage {
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::RequestFullBlock as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
         let sequence_bytes = sequence.to_le_bytes();
         payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
 
@@ -178,7 +177,7 @@ impl RadioMessage {
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::EchoResult as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
 
         RadioMessage { payload, length: 5 }
     }
@@ -207,7 +206,7 @@ impl RadioMessage {
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::RequestBlockPart as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
         let sequence_bytes = sequence.to_le_bytes();
         payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
         let checksum_bytes = payload_checksum.to_le_bytes();
@@ -220,9 +219,9 @@ impl RadioMessage {
     pub fn new_add_block(node_id: u32, sequence: u32, payload_checksum: u32, payload: &[u8]) -> Self {
         // Create a new RadioMessage with a specific message type for adding blocks
         let mut full_payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
-        full_payload[0] = MessageType::RequestBlockPart as u8; // Reusing the same type for simplicity
+        full_payload[0] = MessageType::AddBlock as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        full_payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        full_payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
         let sequence_bytes = sequence.to_le_bytes();
         full_payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
         let checksum_bytes = payload_checksum.to_le_bytes();
@@ -260,16 +259,17 @@ impl RadioMessage {
     pub fn new_get_mempool_state(node_id: u32) -> Self {
         // Create a new RadioMessage with a specific message type for getting mempool state
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
-        payload[0] = MessageType::GetMempoolState as u8;
+        payload[0] = MessageType::RequestNewMempoolItem as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
 
         RadioMessage { payload, length: 5 }
     }
 
     pub fn add_mempool_item(&mut self, anchor_sequence: u32, payload_checksum: u32) -> Result<(), ()> {
         // Add a mempool item to the message payload
-        if self.length + 8 > RADIO_MAX_MESSAGE_SIZE {
+        // The message must fit into a single radio packet
+        if self.length + 8 > RADIO_PACKET_SIZE {
             return Err(());
         }
 
@@ -287,7 +287,7 @@ impl RadioMessage {
         let mut full_payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         full_payload[0] = MessageType::Support as u8;
         let node_id_bytes = node_id.to_le_bytes();
-        full_payload[1..node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        full_payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
         let sequence_bytes = sequence.to_le_bytes();
         full_payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
         let supporter_node_bytes = supporter_node.to_le_bytes();
@@ -301,8 +301,8 @@ impl RadioMessage {
     }
 
     pub fn message_type(&self) -> u8 {
-        if self.payload.is_empty() {
-            return 0; // Default to 0 if payload is empty
+        if self.length == 0 {
+            return 0; // Default to 0 if message has no logical length
         }
         self.payload[0]
     }
@@ -361,16 +361,17 @@ impl RadioMessage {
         if self.message_type() != MessageType::Echo as u8 {
             return None;
         }
-        if self.length < 6 {
+        if self.length < 10 {
             return None; // Not enough data for echo
         }
 
-        let link_quality = self.payload[5];
-        let mut sender_node_id_bytes = [0u8; 4];
-        sender_node_id_bytes.copy_from_slice(&self.payload[1..5]);
-        let sender_node_id = u32::from_le_bytes(sender_node_id_bytes);
+        // Target node id is at bytes 5..9, link quality at byte 9
+        let mut target_node_id_bytes = [0u8; 4];
+        target_node_id_bytes.copy_from_slice(&self.payload[5..9]);
+        let target_node_id = u32::from_le_bytes(target_node_id_bytes);
+        let link_quality = self.payload[9];
 
-        Some((sender_node_id, link_quality))
+        Some((target_node_id, link_quality))
     }
 
     /// Get an iterator over echo result data entries.
@@ -451,7 +452,7 @@ impl RadioMessage {
         }
 
         if self.message_type() == MessageType::AddTransaction as u8 {
-            if message.message_type() != MessageType::GetMempoolState as u8 {
+            if message.message_type() != MessageType::RequestNewMempoolItem as u8 {
                 return false; // Only AddTransaction messages can reply to GetMempoolState
             }
 
@@ -490,7 +491,7 @@ impl RadioMessage {
     /// }
     /// ```
     pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator> {
-        if self.message_type() != MessageType::GetMempoolState as u8 {
+        if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
             return None;
         }
         if self.length < 5 {
@@ -741,7 +742,7 @@ impl PartialEq for RadioMessage {
 
                 self_checksum == other_checksum
             }
-            msg_type if msg_type == MessageType::GetMempoolState as u8 => {
+            msg_type if msg_type == MessageType::RequestNewMempoolItem as u8 => {
                 // Check message type and mempool data (excluding sender_node_id in bytes 1-4)
                 if self.length != other.length {
                     return false;

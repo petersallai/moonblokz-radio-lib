@@ -129,7 +129,7 @@ fn normalize(value: i16, min: i16, max: i16) -> u8 {
 /// * `snr` - The raw SNR value in dB (e.g., 7).
 ///
 /// # Returns
-/// A `LinkQuality` struct containing the final 0-127 score.
+/// A `u8` score in the 0-63 range.
 pub fn calculate_link_quality(rssi: i16, snr: i16) -> u8 {
     // 1. Normalize both RSSI and SNR to a common 0-127 scale.
     let norm_rssi = normalize(rssi, RSSI_MIN, RSSI_MAX);
@@ -350,17 +350,21 @@ impl RadioDevice {
                     }
                 },
                 Either::Second(tx_packet) => {
-                    // Transmit the packet
+                    // Transmit the packet once: wait for a clear channel, then send and break
                     loop {
-                        let cad_result = self.do_cad().await;
-                        if let Ok(false) = cad_result {
-                            // Channel is clear, send packet
-                            let _ = self.send_message(&tx_packet).await;
-                        } else {
-                            Timer::after(embassy_time::Duration::from_millis(
-                                CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
-                            ))
-                            .await;
+                        match self.do_cad().await {
+                            Ok(false) => {
+                                // Channel is clear; attempt a single send then exit loop
+                                let _ = self.send_message(&tx_packet).await;
+                                break;
+                            }
+                            Ok(true) | Err(_) => {
+                                // Channel busy or CAD error: wait then retry CAD
+                                Timer::after(embassy_time::Duration::from_millis(
+                                    CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
+                                ))
+                                .await;
+                            }
                         }
                     }
                 }

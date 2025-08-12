@@ -1,5 +1,5 @@
-use crate::relay_manager::{self, RelayResult};
-use crate::{CONNECTION_MATRIX_SIZE, INCOMMING_PACKET_BUFFER_SIZE, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
+use crate::relay_manager::RelayResult;
+use crate::{CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
@@ -9,7 +9,7 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 use crate::{
-    IncommingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver, RxStateQueueSender,
+    IncomingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver, RxStateQueueSender,
     relay_manager::RelayManager,
 };
 
@@ -23,7 +23,7 @@ const PACKET_CHECK_BUFFER_EMPTY_VALUE: u8 = 255;
 #[cfg_attr(feature = "std", embassy_executor::task(pool_size = 10))]
 #[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
 pub(crate) async fn rx_handler_task(
-    incomming_message_queue_sender: IncommingMessageQueueSender,
+    incoming_message_queue_sender: IncomingMessageQueueSender,
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
     rx_packet_queue_receiver: RxPacketQueueReceiver,
     rx_state_queue_sender: RxStateQueueSender,
@@ -31,17 +31,19 @@ pub(crate) async fn rx_handler_task(
     echo_request_minimal_interval: u32,
     echo_messages_target_interval: u8,
     echo_gathering_timeout: u8,
+    relay_position_delay: u8,
     scoring_matrix: ScoringMatrix,
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
-    let mut packet_buffer: [Option<PacketBufferItem>; INCOMMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMMING_PACKET_BUFFER_SIZE];
-    let mut packet_check_buffer: [u8; INCOMMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMMING_PACKET_BUFFER_SIZE];
+    let mut packet_buffer: [Option<PacketBufferItem>; INCOMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMING_PACKET_BUFFER_SIZE];
+    let mut packet_check_buffer: [u8; INCOMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMING_PACKET_BUFFER_SIZE];
     let mut rng = WyRand::seed_from_u64(rng_seed);
     let mut relay_manager = RelayManager::<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>::new(
         echo_request_minimal_interval,
         echo_messages_target_interval,
         echo_gathering_timeout,
+        relay_position_delay,
         scoring_matrix,
         own_node_id,
         rng.next_u64(),
@@ -58,7 +60,17 @@ pub(crate) async fn rx_handler_task(
                 let rx_packet = received_packet.packet;
                 if rx_packet.total_packet_count() == 1 {
                     let radio_message = RadioMessage::new_from_single_packet(rx_packet);
-                    let _ = incomming_message_queue_sender.try_send(radio_message);
+                    if let Err(result_error) = incoming_message_queue_sender.try_send(radio_message) {
+                        let failed_message = match result_error {
+                            TrySendError::Full(msg) => msg,
+                        };
+                        log!(
+                            Level::Warn,
+                            "Failed to send single-packet message to incoming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                            failed_message.message_type(),
+                            failed_message.sender_node_id(),
+                        );
+                    }
                 } else if rx_packet.total_packet_count() == 0 {
                     log!(Level::Warn, "Received empty packet, skipping");
                     continue;
@@ -66,6 +78,16 @@ pub(crate) async fn rx_handler_task(
                     // Handle multi-packet message
                     let packet_index = rx_packet.packet_index() as usize;
                     let total_packet_count = rx_packet.total_packet_count() as usize;
+
+                    if total_packet_count > INCOMING_PACKET_BUFFER_SIZE {
+                        log!(
+                            Level::Error,
+                            "Total packet count {} exceeds buffer capacity {}. Dropping message.",
+                            total_packet_count,
+                            INCOMING_PACKET_BUFFER_SIZE
+                        );
+                        continue;
+                    }
 
                     if packet_index == total_packet_count - 1 {
                         rx_state_queue_sender.try_send(RxState::PacketedRxEnded).unwrap_or_else(|_| {
@@ -79,7 +101,7 @@ pub(crate) async fn rx_handler_task(
                             });
                     }
 
-                    if packet_index as usize >= INCOMMING_PACKET_BUFFER_SIZE {
+                    if packet_index as usize >= INCOMING_PACKET_BUFFER_SIZE {
                         log!(Level::Error, "Packet index out of bounds: {}", packet_index);
                         continue;
                     }
@@ -87,7 +109,7 @@ pub(crate) async fn rx_handler_task(
                     let mut already_received = false;
                     let mut empty_index = PACKET_CHECK_BUFFER_EMPTY_VALUE;
 
-                    for i in 0..INCOMMING_PACKET_BUFFER_SIZE {
+                    for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                         if let Some(packet) = &packet_buffer[i] {
                             if packet.packet.data[0..15] == rx_packet.data[0..15] {
                                 // This packet is already in the buffer, skip it
@@ -112,7 +134,7 @@ pub(crate) async fn rx_handler_task(
                         let mut oldest_time = Instant::now() + embassy_time::Duration::from_secs(60);
                         let mut oldest_packet_header: [u8; 13] = [0u8; 13];
 
-                        for i in 0..INCOMMING_PACKET_BUFFER_SIZE {
+                        for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                             if let Some(packet) = &packet_buffer[i] {
                                 if packet.arrival_time < oldest_time {
                                     oldest_time = packet.arrival_time;
@@ -123,7 +145,7 @@ pub(crate) async fn rx_handler_task(
                         }
 
                         // Remove all packets for the oldest message
-                        for i in 0..INCOMMING_PACKET_BUFFER_SIZE {
+                        for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                             if let Some(packet) = &packet_buffer[i] {
                                 if packet.packet.data[0..13] == oldest_packet_header {
                                     packet_buffer[i] = None;
@@ -145,7 +167,7 @@ pub(crate) async fn rx_handler_task(
 
                     // Check if we have all packets for this message
                     packet_check_buffer.fill(PACKET_CHECK_BUFFER_EMPTY_VALUE);
-                    for i in 0..INCOMMING_PACKET_BUFFER_SIZE {
+                    for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                         if let Some(packet_item) = &packet_buffer[i] {
                             if packet_item.packet.data[0..13] == packet_header {
                                 // Mark this packet as received
@@ -184,36 +206,14 @@ pub(crate) async fn rx_handler_task(
                             radio_message,
                             received_packet.link_quality,
                             outgoing_message_queue_sender,
-                            incomming_message_queue_sender,
+                            incoming_message_queue_sender,
                             &mut relay_manager,
-                            own_node_id,
                         );
-
-                        // Clear the buffer for the next message
-                        for item in &mut packet_buffer {
-                            *item = None;
-                        }
-                        for check in &mut packet_check_buffer {
-                            *check = PACKET_CHECK_BUFFER_EMPTY_VALUE;
-                        }
                     }
                 }
             }
             Either3::Second(process_result) => {
-                if let RelayResult::SendMessage(response_message) = relay_manager.process_processing_result(process_result) {
-                    let result = outgoing_message_queue_sender.try_send(response_message);
-                    if let Err(result_error) = result {
-                        let failed_message = match result_error {
-                            TrySendError::Full(msg) => msg,
-                        };
-                        log!(
-                            Level::Warn,
-                            "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
-                            failed_message.message_type(),
-                            failed_message.sender_node_id(),
-                        );
-                    };
-                }
+                relay_manager.process_processing_result(process_result);
             }
             Either3::Third(_) => {
                 if let RelayResult::SendMessage(response_message) = relay_manager.process_timed_tasks() {
@@ -239,11 +239,10 @@ fn process_message(
     message: RadioMessage,
     last_link_quality: u8,
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
-    incomming_message_queue_sender: IncommingMessageQueueSender,
+    incoming_message_queue_sender: IncomingMessageQueueSender,
     relay_manager: &mut RelayManager<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>,
-    own_node_id: u32,
 ) {
-    let mut process_message = true;
+    let mut should_process = true;
     let relay_result = relay_manager.process_received_message(&message, last_link_quality);
 
     match relay_result {
@@ -270,7 +269,7 @@ fn process_message(
             };
         }
         RelayResult::AlreadyHaveMessage => {
-            process_message = false;
+            should_process = false;
         }
     }
 
@@ -278,12 +277,11 @@ fn process_message(
         || message.message_type() == MessageType::RequestFullBlock as u8
         || message.message_type() == MessageType::RequestBlockPart as u8
         || message.message_type() == MessageType::AddTransaction as u8
-        || message.message_type() == MessageType::AddBlock as u8
-        || message.message_type() == MessageType::GetMempoolState as u8
+        || message.message_type() == MessageType::RequestNewMempoolItem as u8
         || message.message_type() == MessageType::Support as u8)
-        && process_message
+        && should_process
     {
-        let result = incomming_message_queue_sender.try_send(message);
+        let result = incoming_message_queue_sender.try_send(message);
 
         if let Err(result_error) = result {
             let failed_message = match result_error {
@@ -291,7 +289,7 @@ fn process_message(
             };
             log!(
                 Level::Warn,
-                "Failed to send message to incomming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                "Failed to send message to incoming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
                 failed_message.message_type(),
                 failed_message.sender_node_id(),
             );
