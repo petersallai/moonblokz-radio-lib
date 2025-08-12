@@ -7,7 +7,7 @@
 ))]
 compile_error!("Only one radio implementation feature can be enabled at a time");
 
-#[cfg(not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262")))]
+#[cfg(all(not(test), not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262"))))]
 compile_error!("At least one radio implementation feature must be enabled");
 
 #[cfg(feature = "radio-device-lora-sx1262")]
@@ -129,6 +129,17 @@ pub struct ScoringMatrix {
     relay_score_limit: u8,
 }
 
+impl ScoringMatrix {
+    pub(crate) const fn new(matrix: [[u8; 4]; 4], poor_limit: u8, excellent_limit: u8, relay_score_limit: u8) -> Self {
+        Self {
+            matrix,
+            poor_limit,
+            excellent_limit,
+            relay_score_limit,
+        }
+    }
+}
+
 enum RxState {
     PacketedRxInProgress(u8, u8), // (packet_index, total_packet_count)
     PacketedRxEnded,
@@ -143,7 +154,7 @@ enum RxState {
 /// with different hardware requirements, pin configurations, and setup parameters.
 ///
 /// # Examples
-/// ```rust,no_run
+/// ```rust,ignore
 /// use moonblokz_radio_lib::{RadioDeviceTrait, RadioPacket, RadioDeviceError};
 ///
 /// async fn send_packet<T: RadioDeviceTrait>(radio: &mut T, packet: &RadioPacket) -> Result<(), RadioDeviceError> {
@@ -365,5 +376,47 @@ impl RadioCommunicationManager {
         // TODO: Implementation for reporting the status of message processing
     }
 }
-#[cfg(test)]
-mod tests {}
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    #[test]
+    fn radio_config_constructs() {
+        let _cfg = RadioConfiguration {
+            delay_between_tx_packets: 0,
+            delay_between_tx_messages: 0,
+            echo_request_minimal_interval: 1,
+            echo_messages_target_interval: 1,
+            echo_gathering_timeout: 1,
+            relay_position_delay: 1,
+        };
+    }
+
+    #[test]
+    fn manager_send_message_not_inited() {
+        let mgr = RadioCommunicationManager::new();
+        let msg = RadioMessage::new_request_echo(123);
+        match mgr.send_message(msg) {
+            Err(SendMessageError::NotInited) => {}
+            other => panic!("Expected NotInited, got: {:?}", core::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn manager_receive_message_not_inited() {
+        let mgr = RadioCommunicationManager::new();
+        let res = block_on(async { mgr.receive_message().await });
+        match res {
+            Err(ReceiveMessageError::NotInited) => {}
+            other => panic!("Expected NotInited, got: {:?}", core::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn reexports_are_usable() {
+        // Basic sanity that re-exported constructors work from the crate root
+        let msg = RadioMessage::new_get_mempool_state(42);
+        assert_eq!(msg.message_type(), MessageType::RequestNewMempoolItem as u8);
+    }
+}

@@ -7,6 +7,6 @@ edition = "2024"
 embassy-executor = { version = "0.7.0", features = ["arch-std"]}
 embassy-futures = { version = "0.1.1"}
 embassy-time = { version = "0.4.0",features = ["std"]}
-moonblokz-radio-lib = { path = "../moonblokz-radio-lib",default-features = false, features = ["radio-device-echo"]}
+moonblokz-radio-lib = { path = "../../",default-features = false, features = ["radio-device-echo"]}
 log = "0.4"
 env_logger = "0.11"

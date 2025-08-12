@@ -296,3 +296,97 @@ fn process_message(
         };
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use crate::MessageProcessingResult;
+    use crate::relay_manager::RelayManager;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    use embassy_sync::channel::Channel;
+
+    fn scoring() -> ScoringMatrix {
+        ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0)
+    }
+
+    fn new_rm() -> RelayManager<{ crate::CONNECTION_MATRIX_SIZE }, { crate::WAIT_POOL_SIZE }> {
+        RelayManager::new(1, 1, 1, 1, scoring(), 1, 123)
+    }
+
+    #[test]
+    fn request_echo_routes_only_to_outgoing() {
+        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+
+        let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
+        let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
+
+        let out_tx = outgoing.sender();
+        let out_rx = outgoing.receiver();
+        let in_tx = incoming.sender();
+        let in_rx = incoming.receiver();
+
+        let mut rm = new_rm();
+        let msg = RadioMessage::new_request_echo(2);
+        process_message(msg, 10, out_tx, in_tx, &mut rm);
+
+        // Outgoing should have one Echo
+        let sent = out_rx.try_receive().expect("expected an outgoing message");
+        assert_eq!(sent.message_type(), MessageType::Echo as u8);
+
+        // Incoming should be empty
+        assert!(in_rx.try_receive().is_err());
+    }
+
+    #[test]
+    fn add_block_routes_to_incoming_when_not_duplicate() {
+        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+
+        let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
+        let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
+
+        let out_tx = outgoing.sender();
+        let out_rx = outgoing.receiver();
+        let in_tx = incoming.sender();
+        let in_rx = incoming.receiver();
+
+        let mut rm = new_rm();
+        let msg = RadioMessage::new_add_block(3, 100, 0xDEAD_BEEF, &[1, 2, 3]);
+        process_message(msg, 5, out_tx, in_tx, &mut rm);
+
+        // Incoming should have the AddBlock
+        let in_msg = in_rx.try_receive().expect("expected an incoming message");
+        assert_eq!(in_msg.message_type(), MessageType::AddBlock as u8);
+
+        // Outgoing should be empty
+        assert!(out_rx.try_receive().is_err());
+    }
+
+    #[test]
+    fn duplicate_message_is_not_routed_to_incoming() {
+        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+
+        let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
+        let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
+
+        let out_tx = outgoing.sender();
+        let out_rx = outgoing.receiver();
+        let in_tx = incoming.sender();
+        let in_rx = incoming.receiver();
+
+        let mut rm = new_rm();
+
+        // Pre-populate wait pool with a message
+        let orig = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9]);
+        rm.process_processing_result(MessageProcessingResult::NewBlockAdded(orig));
+
+        // Process an equal message: should be treated as duplicate
+        let dup = RadioMessage::new_add_block(4, 5, 0x1111_2222, &[9]); // different sender ignored in equality
+        process_message(dup, 0, out_tx, in_tx, &mut rm);
+
+        assert!(in_rx.try_receive().is_err());
+        assert!(out_rx.try_receive().is_err());
+    }
+}

@@ -509,3 +509,127 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         }
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    const OWN_ID: u32 = 1;
+
+    fn test_scoring_matrix() -> ScoringMatrix {
+        // Simple matrix with uniform weights so scores are > 0
+        ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0)
+    }
+
+    fn new_manager<const N: usize, const W: usize>() -> RelayManager<N, W> {
+        RelayManager::new(1, 1, 1, 1, test_scoring_matrix(), OWN_ID, 42)
+    }
+
+    #[test]
+    fn echo_request_increments_dirty_and_sends_reply() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+        let sender_id = 2u32;
+        let last_lq = 10u8;
+
+        let req = RadioMessage::new_request_echo(sender_id);
+        let res = rm.process_received_message(&req, last_lq);
+
+        // Should send an Echo reply
+        match res {
+            RelayResult::SendMessage(m) => assert_eq!(m.message_type(), MessageType::Echo as u8),
+            _ => panic!("Expected SendMessage(Echo)"),
+        }
+
+        // Sender should be inserted at index 1 (index 0 is own node)
+        let sender_index = 1usize;
+        // Dirty bit should be incremented and quality preserved (zero initially)
+        assert_eq!(rm.connection_matrix[sender_index][0] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[sender_index][0] & QUALITY_MASK, 0);
+    }
+
+    #[test]
+    fn echo_updates_matrix_for_known_target() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+
+        // Prime sender at index 1 via echo request
+        let sender_id = 2u32;
+        let _ = rm.process_received_message(&RadioMessage::new_request_echo(sender_id), 10);
+
+        // Manually register a target node at index 2
+        let target_id = 42u32;
+        rm.connection_matrix_nodes[2] = target_id;
+        rm.connected_nodes_count = 3;
+
+        // Echo from sender -> target with link quality
+        let link_q = 15u8;
+        let echo = RadioMessage::new_echo(sender_id, target_id, link_q);
+        let _ = rm.process_received_message(&echo, link_q);
+
+        assert_eq!(rm.connection_matrix[1][2] & QUALITY_MASK, link_q);
+    }
+
+    #[test]
+    fn echo_result_updates_both_directions() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+
+        // Add sender at index 1
+        let sender_id = 2u32;
+        let _ = rm.process_received_message(&RadioMessage::new_request_echo(sender_id), 10);
+
+        // Add neighbor at index 2
+        let neighbor_id = 77u32;
+        rm.connection_matrix_nodes[2] = neighbor_id;
+        rm.connected_nodes_count = 3;
+
+        // Build echo result with one item
+        let mut er = RadioMessage::new_echo_result(sender_id);
+        er.add_echo_result_item(neighbor_id, 20, 21).unwrap();
+        let _ = rm.process_received_message(&er, 0);
+
+        assert_eq!(rm.connection_matrix[1][2] & QUALITY_MASK, 20);
+        assert_eq!(rm.connection_matrix[2][1] & QUALITY_MASK, 21);
+    }
+
+    #[test]
+    fn wait_pool_adds_on_new_block() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+
+        let msg = RadioMessage::new_add_block(3, 100, 0xAAAA_BBBB, &[1, 2, 3, 4]);
+        rm.process_processing_result(MessageProcessingResult::NewBlockAdded(msg));
+
+        // Wait pool should contain the message
+        let contains = rm
+            .wait_pool
+            .items
+            .iter()
+            .flatten()
+            .any(|it| it.message == RadioMessage::new_add_block(3, 100, 0xAAAA_BBBB, &[1, 2, 3, 4]));
+        assert!(contains);
+    }
+
+    #[test]
+    fn duplicate_in_wait_pool_returns_already_have_message() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+
+        let msg1 = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9, 9, 9]);
+        rm.process_processing_result(MessageProcessingResult::NewBlockAdded(msg1));
+
+        // Receiving the same (logically equal) message should return AlreadyHaveMessage
+        let msg2 = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9, 9, 9]);
+        let res = rm.process_received_message(&msg2, 0);
+        match res {
+            RelayResult::AlreadyHaveMessage => {}
+            other => panic!("Expected AlreadyHaveMessage, got: {:?}", core::mem::discriminant(&other)),
+        }
+    }
+}

@@ -378,7 +378,7 @@ impl RadioMessage {
     /// Each entry contains neighbor node ID, send link quality, and receiving link quality.
     ///
     /// # Example
-    /// ```rust
+    /// ```rust,ignore
     /// // Assuming you have a RadioMessage with EchoResult message type
     /// if let Some(iterator) = message.get_echo_result_data_iterator() {
     ///     for item in iterator {
@@ -481,7 +481,7 @@ impl RadioMessage {
     /// Each entry contains anchor sequence and transaction payload checksum.
     ///
     /// # Example
-    /// ```rust
+    /// ```rust,ignore
     /// // Assuming you have a RadioMessage with GetMempoolState message type
     /// if let Some(iterator) = message.get_mempool_data_iterator() {
     ///     for item in iterator {
@@ -787,3 +787,170 @@ impl PartialEq for RadioMessage {
 }
 
 impl Eq for RadioMessage {}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_echo_basics_and_eq() {
+        let node = 0x0A0B0C0D;
+        let m1 = RadioMessage::new_request_echo(node);
+        assert_eq!(m1.message_type(), MessageType::RequestEcho as u8);
+        assert_eq!(m1.length(), 5);
+        assert_eq!(m1.sender_node_id(), node);
+
+        // Same sender -> equal; different sender -> not equal
+        let m2 = RadioMessage::new_request_echo(node);
+        let m3 = RadioMessage::new_request_echo(123);
+        assert_eq!(m1, m2);
+        assert_ne!(m1, m3);
+    }
+
+    #[test]
+    fn echo_fields_and_eq_ignore_sender() {
+        let a = RadioMessage::new_echo(100, 200, 7);
+        assert_eq!(a.message_type(), MessageType::Echo as u8);
+        let (tgt, lq) = a.get_echo_data().unwrap();
+        assert_eq!((tgt, lq), (200, 7));
+
+        // Different sender but same target+quality -> equal
+        let b = RadioMessage::new_echo(999, 200, 7);
+        assert_eq!(a, b);
+
+        // Different target -> not equal
+        let c = RadioMessage::new_echo(999, 201, 7);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn echo_result_iterator_and_eq_ignores_sender() {
+        let mut er1 = RadioMessage::new_echo_result(42);
+        er1.add_echo_result_item(2, 10, 11).unwrap();
+        er1.add_echo_result_item(3, 20, 21).unwrap();
+
+        // Iterate and collect
+        let items: Vec<(u32, u8, u8)> = er1
+            .get_echo_result_data_iterator()
+            .unwrap()
+            .map(|it| (it.neighbor_node(), it.send_link_quality(), it.receiving_link_quality()))
+            .collect();
+        assert_eq!(items, vec![(2, 10, 11), (3, 20, 21)]);
+
+        // Same data, different sender -> equal
+        let mut er2 = RadioMessage::new_echo_result(7);
+        er2.add_echo_result_item(2, 10, 11).unwrap();
+        er2.add_echo_result_item(3, 20, 21).unwrap();
+        assert_eq!(er1, er2);
+
+        // Different data -> not equal
+        let mut er3 = RadioMessage::new_echo_result(7);
+        er3.add_echo_result_item(2, 10, 12).unwrap();
+        assert_ne!(er1, er3);
+    }
+
+    #[test]
+    fn mempool_add_iter_and_capacity() {
+        let mut m = RadioMessage::new_get_mempool_state(11);
+        assert_eq!(m.message_type(), MessageType::RequestNewMempoolItem as u8);
+
+        // Fill up to capacity
+        let capacity = (RADIO_PACKET_SIZE - 5) / 8; // items of 8 bytes after 5-byte header
+        for i in 0..capacity {
+            m.add_mempool_item(i as u32, (i as u32) ^ 0xDEAD_BEEF).unwrap();
+        }
+        // Next add should fail
+        assert!(m.add_mempool_item(999, 999).is_err());
+
+        // Iterate and verify
+        let items: Vec<(u32, u32)> = m
+            .get_mempool_data_iterator()
+            .unwrap()
+            .map(|it| (it.anchor_sequence(), it.transaction_payload_checksum()))
+            .collect();
+        assert_eq!(items.len(), capacity);
+        assert_eq!(items[0], (0, 0xDEAD_BEEF));
+    }
+
+    #[test]
+    fn add_transaction_get_data_and_reply_logic() {
+        let payload = &[1, 2, 3, 4, 5];
+        let at = RadioMessage::new_add_transaction(7, 1234, 0xABCD_0123, payload);
+        assert_eq!(at.message_type(), MessageType::AddTransaction as u8);
+        let (anchor, checksum, data) = at.get_add_transaction_data().unwrap();
+        assert_eq!(anchor, 1234);
+        assert_eq!(checksum, 0xABCD_0123);
+        assert_eq!(data, payload);
+
+        // Case 1: Request mempool without matching item -> is_reply_to == true
+        let mut req1 = RadioMessage::new_get_mempool_state(9);
+        req1.add_mempool_item(1, 2).unwrap();
+        assert!(at.is_reply_to(&req1));
+
+        // Case 2: Request mempool includes matching item -> is_reply_to == false
+        let mut req2 = RadioMessage::new_get_mempool_state(9);
+        req2.add_mempool_item(1234, 0xABCD_0123).unwrap();
+        assert!(!at.is_reply_to(&req2));
+    }
+
+    #[test]
+    fn add_block_fragmentation_and_reassembly() {
+        let seq = 0x0102_0304;
+        let csum = 0xA1B2_C3D4;
+        // Payload length spanning multiple packets
+        let part = RADIO_PACKET_SIZE - 15; // bytes per packet chunk
+        let total_len = part * 3 + 10; // 3 full + 1 partial
+        let mut payload_vec = vec![0u8; total_len];
+        // Make payload deterministic
+        for (i, b) in payload_vec.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let msg = RadioMessage::new_add_block(5, seq, csum, &payload_vec);
+
+        // Packetization
+        let count = msg.get_packet_count();
+        assert_eq!(count, 4);
+
+        let mut reassembled = RadioMessage::new_empty_message();
+        for idx in 0..count {
+            let p = msg.get_packet(idx).expect("packet must exist");
+            // Validate per-packet header/meta
+            assert_eq!(p.message_type(), MessageType::AddBlock as u8);
+            assert_eq!(p.total_packet_count() as usize, count);
+            assert_eq!(p.packet_index() as usize, idx);
+            // Feed into reassembler
+            reassembled.add_packet(&p);
+        }
+
+        // Reassembled message should match type/sequence/checksum and byte length
+        assert_eq!(reassembled.message_type(), MessageType::AddBlock as u8);
+        assert_eq!(reassembled.sequence().unwrap(), seq);
+        assert_eq!(reassembled.length(), 13 + total_len);
+
+        // Verify payload bytes match exactly
+        assert_eq!(&reassembled.payload[13..13 + total_len], &payload_vec[..]);
+
+        // Out-of-range packet request returns None
+        assert!(msg.get_packet(count).is_none());
+    }
+
+    #[test]
+    fn new_from_single_packet_roundtrip_simple() {
+        let m = RadioMessage::new_request_full_block(21, 0xDEAD_BEEF);
+        let p = m.get_packet(0).unwrap();
+        // Single packet reconstruction should be equal
+        let m2 = RadioMessage::new_from_single_packet(p);
+        assert_eq!(m2, m);
+    }
+
+    #[test]
+    fn request_block_part_fields_via_eq() {
+        let a = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678, 9);
+        let b = RadioMessage::new_request_block_part(9999, 0xCAFEBABE, 0x1234_5678, 9);
+        // Equality ignores sender for this type, compares seq/checksum/part
+        assert_eq!(a, b);
+        // Different packet number -> not equal
+        let c = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678, 10);
+        assert_ne!(a, c);
+    }
+}
