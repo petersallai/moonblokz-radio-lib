@@ -41,6 +41,7 @@ async fn main(spawner: Spawner) {
         echo_messages_target_interval: 100,
         echo_gathering_timeout: 10,
         relay_position_delay: 1,
+        scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
     radio_communication_manager_temp_1.initialize(radio_configuration, spawner, radio_device_1);
@@ -56,6 +57,11 @@ async fn main(spawner: Spawner) {
     let radio_configuration = RadioConfiguration {
         delay_between_tx_packets: 1,
         delay_between_tx_messages: 10,
+        echo_request_minimal_interval: 86400,
+        echo_messages_target_interval: 100,
+        echo_gathering_timeout: 10,
+        relay_position_delay: 1,
+        scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
     let res = radio_communication_manager_temp_2.initialize(radio_configuration, spawner, radio_device_2);

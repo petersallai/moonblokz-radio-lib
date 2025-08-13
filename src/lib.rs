@@ -66,6 +66,7 @@ pub struct RadioConfiguration {
     pub echo_messages_target_interval: u8,
     pub echo_gathering_timeout: u8,
     pub relay_position_delay: u8,
+    pub scoring_matrix: ScoringMatrix,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -250,7 +251,6 @@ impl RadioCommunicationManager {
         radio_config: RadioConfiguration,
         spawner: Spawner,
         radio_device: RadioDevice,
-        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
@@ -264,7 +264,6 @@ impl RadioCommunicationManager {
             &TX_PACKET_QUEUE,
             &RX_PACKET_QUEUE,
             &RX_STATE_QUEUE,
-            scoring_matrix,
             own_node_id,
             rng_seed,
         );
@@ -276,7 +275,6 @@ impl RadioCommunicationManager {
         radio_config: RadioConfiguration,
         spawner: Spawner,
         radio_device: RadioDevice,
-        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
@@ -307,7 +305,6 @@ impl RadioCommunicationManager {
             tx_packet_queue_static,
             rx_packet_queue_static,
             rx_state_queue_static,
-            scoring_matrix,
             own_node_id,
             rng_seed,
         );
@@ -324,11 +321,21 @@ impl RadioCommunicationManager {
         tx_packet_queue: &'static TXPacketQueue,
         rx_packet_queue: &'static RxPacketQueue,
         rx_state_queue: &'static RxStateQueue,
-        scoring_matrix: ScoringMatrix,
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), ()> {
         let mut rng = WyRand::seed_from_u64(rng_seed);
+
+        // Destructure config to avoid partial moves later
+        let RadioConfiguration {
+            delay_between_tx_packets,
+            delay_between_tx_messages,
+            echo_request_minimal_interval,
+            echo_messages_target_interval,
+            echo_gathering_timeout,
+            relay_position_delay,
+            scoring_matrix,
+        } = radio_config;
 
         // Spawn the radio task
         let radion_device_task_result = spawner.spawn(radio_device_task(
@@ -346,8 +353,8 @@ impl RadioCommunicationManager {
             outgoing_message_queue.receiver(),
             rx_state_queue.receiver(),
             tx_packet_queue.sender(),
-            radio_config.delay_between_tx_packets,
-            radio_config.delay_between_tx_messages,
+            delay_between_tx_packets,
+            delay_between_tx_messages,
             rng.next_u64(),
         ));
         if tx_scheduler_task_result.is_err() {
@@ -361,10 +368,10 @@ impl RadioCommunicationManager {
             rx_packet_queue.receiver(),
             rx_state_queue.sender(),
             process_result_queue.receiver(),
-            radio_config.echo_request_minimal_interval,
-            radio_config.echo_messages_target_interval,
-            radio_config.echo_gathering_timeout,
-            radio_config.relay_position_delay,
+            echo_request_minimal_interval,
+            echo_messages_target_interval,
+            echo_gathering_timeout,
+            relay_position_delay,
             scoring_matrix,
             own_node_id,
             rng.next_u64(),
@@ -426,6 +433,7 @@ mod tests {
             echo_messages_target_interval: 1,
             echo_gathering_timeout: 1,
             relay_position_delay: 1,
+            scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
         };
     }
 
