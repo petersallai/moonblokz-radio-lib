@@ -123,14 +123,14 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, Criti
 #[cfg(feature = "embedded")]
 static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 pub struct ScoringMatrix {
-    matrix: [[u8; 4]; 4],
-    poor_limit: u8,
-    excellent_limit: u8,
-    relay_score_limit: u8,
+    pub(crate) matrix: [[u8; 4]; 4],
+    pub(crate) poor_limit: u8,
+    pub(crate) excellent_limit: u8,
+    pub(crate) relay_score_limit: u8,
 }
 
 impl ScoringMatrix {
-    pub(crate) const fn new(matrix: [[u8; 4]; 4], poor_limit: u8, excellent_limit: u8, relay_score_limit: u8) -> Self {
+    pub const fn new(matrix: [[u8; 4]; 4], poor_limit: u8, excellent_limit: u8, relay_score_limit: u8) -> Self {
         Self {
             matrix,
             poor_limit,
@@ -138,7 +138,43 @@ impl ScoringMatrix {
             relay_score_limit,
         }
     }
+
+    //Encoded form has a compressed representation of the matrix and limits
+    //If we call the rows of the matrix with numbers (from 1 to 4) and columns with letters (A to D), the encoded form is as follows:
+    // B1: 4 bits
+    // C1: 4 bits
+    // D1: 4 bits
+    // C2: 4 bits
+    // D2: 4 bits
+    // D3: 4 bits
+    // All the other cells of the scoring matrix is 0
+    // Next the limits are also represented in the encoded form:
+    // Poor limit: 6 bits
+    // Excellent limit: 6 bits
+    // Relay score limit: 4 bits
+    // The total size of the encoded form is 5 bytes
+    pub const fn new_from_encoded(encoded: &[u8; 5]) -> Self {
+        let mut matrix = [[0; 4]; 4];
+
+        matrix[0][1] = (encoded[0] >> 4) & 0x0F;
+        matrix[0][2] = encoded[0] & 0x0F;
+        matrix[0][3] = (encoded[1] >> 4) & 0x0F;
+        matrix[1][2] = encoded[1] & 0x0F;
+        matrix[1][3] = (encoded[2] >> 4) & 0x0F;
+        matrix[2][3] = encoded[2] & 0x0F;
+        // Limits are packed as:
+        // poor_limit:      bits [7:2] of encoded[3] (6 bits)
+        // excellent_limit: bits [1:0] of encoded[3] (upper 2 bits) concatenated with bits [7:4] of encoded[4] (lower 4 bits) => 6 bits total
+        // relay_score:     bits [3:0] of encoded[4]
+        let poor_limit = (encoded[3] >> 2) & 0x3F;
+        let excellent_limit = ((encoded[3] & 0x03) << 4) | (encoded[4] >> 4);
+        let relay_score_limit = encoded[4] & 0x0F;
+
+        Self::new(matrix, poor_limit, excellent_limit, relay_score_limit)
+    }
 }
+
+// dbg_limits helper removed; tests access fields directly.
 
 enum RxState {
     PacketedRxInProgress(u8, u8), // (packet_index, total_packet_count)
@@ -148,7 +184,7 @@ enum RxState {
 /// Trait defining the interface for radio device implementations
 ///
 /// This trait provides a standard interface for different radio device types,
-/// enabling abstraction over variousradio harware implementations.
+/// enabling abstraction over various radio hardware implementations.
 ///
 /// Note: Initialization is not part of this trait as it is highly implementation-dependent
 /// with different hardware requirements, pin configurations, and setup parameters.
@@ -418,5 +454,40 @@ mod tests {
         // Basic sanity that re-exported constructors work from the crate root
         let msg = RadioMessage::new_get_mempool_state(42);
         assert_eq!(msg.message_type(), MessageType::RequestNewMempoolItem as u8);
+    }
+
+    #[test]
+    fn scoring_matrix_new_from_encoded_decodes_limits() {
+        // Choose distinct limits to catch bit packing errors
+        let poor: u8 = 0b10_1010; // 42
+        let excellent: u8 = 0b11_0011; // 51
+        let relay: u8 = 0b1010; // 10
+
+        // Pack per the documented layout
+        // encoded[3]: poor in bits [7:2], top 2 bits of excellent in [1:0]
+        let e3 = (poor << 2) | (excellent >> 4);
+        // encoded[4]: lower 4 bits of excellent in [7:4], relay in [3:0]
+        let e4 = ((excellent & 0x0F) << 4) | (relay & 0x0F);
+        let encoded = [0u8, 0u8, 0u8, e3, e4];
+
+        let sm = ScoringMatrix::new_from_encoded(&encoded);
+        assert_eq!(sm.poor_limit, poor & 0x3F);
+        assert_eq!(sm.excellent_limit, excellent & 0x3F);
+        assert_eq!(sm.relay_score_limit, relay & 0x0F);
+    }
+
+    #[test]
+    fn test_scoring_matrix_default_values_encoding() {
+        let encoded_value = [255u8, 243u8, 65u8, 82u8, 143u8];
+        let sm = ScoringMatrix::new_from_encoded(&encoded_value);
+        assert_eq!(sm.poor_limit, 20);
+        assert_eq!(sm.excellent_limit, 40);
+        assert_eq!(sm.relay_score_limit, 15);
+        assert_eq!(sm.matrix[0][1], 15);
+        assert_eq!(sm.matrix[0][2], 15);
+        assert_eq!(sm.matrix[0][3], 15);
+        assert_eq!(sm.matrix[1][2], 3);
+        assert_eq!(sm.matrix[1][3], 4);
+        assert_eq!(sm.matrix[2][3], 1);
     }
 }
