@@ -90,18 +90,14 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if packet_index == total_packet_count - 1 {
-                        rx_state_queue_sender.try_send(RxState::PacketedRxEnded).unwrap_or_else(|_| {
-                            log!(Level::Error, "Failed to send PACKETED_RX_ENDED state. The queue is full.");
-                        });
+                        //we can drop messages it there is an unhandled message in the queue
+                        _ = rx_state_queue_sender.try_send(RxState::PacketedRxEnded);
                     } else {
-                        rx_state_queue_sender
-                            .try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8))
-                            .unwrap_or_else(|_| {
-                                log!(Level::Error, "Failed to send PACKETED_RX_IN_PROGRESS state. The queue is full.");
-                            });
+                        _ = rx_state_queue_sender.try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8));
                     }
 
                     if packet_index as usize >= INCOMING_PACKET_BUFFER_SIZE {
+                        //we can drop messages it there is an unhandled message in the queue
                         log!(Level::Error, "Packet index out of bounds: {}", packet_index);
                         continue;
                     }
@@ -247,12 +243,7 @@ fn process_message(
 
     match relay_result {
         RelayResult::None => {
-            log!(
-                Level::Debug,
-                "No action needed for message: messagetype: {}, sender_node_id: {}",
-                message.message_type(),
-                message.sender_node_id()
-            );
+            // No action needed
         }
         RelayResult::SendMessage(message) => {
             let result = outgoing_message_queue_sender.try_send(message);

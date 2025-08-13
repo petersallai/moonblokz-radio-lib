@@ -153,11 +153,13 @@ pub(crate) async fn tx_scheduler_step(
         }
         Either::Second(rxstate) => match rxstate {
             RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
+                log!(log::Level::Debug, "Received RX state update in progress");
                 let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
                 let new_delay_timeout = Instant::now() + Duration::from_secs(remaining_packets * delay_between_packets as u64);
                 rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
             }
             RxState::PacketedRxEnded => {
+                log!(log::Level::Debug, "Received RX state update ended");
                 rx_state_delay_timeout = Instant::now();
             }
         },

@@ -1,29 +1,20 @@
-//! This example runs on the Raspberry Pi Pico with a Waveshare board containing a Semtech Sx1262 radio.
-//! It demonstrates LORA P2P send functionality.
+// This example runs on the Raspberry Pi Pico with a Waveshare board containing a Semtech Sx1262 radio.
+// It demonstrates LORA P2P send functionality.
 
 #![no_std]
 #![no_main]
 
-use defmt::*;
 use embassy_executor::Spawner;
+// GPIO/SPI types are not referenced directly here, but we need Pin/Channel traits for `degrade()`.
 use embassy_rp::dma::Channel;
-use embassy_rp::gpio::{Input, Level, Output, Pin, Pull};
-use embassy_rp::spi::{Config, Spi};
+use embassy_rp::gpio::Pin;
 use embassy_rp::usb::Driver;
 use embassy_rp::{bind_interrupts, peripherals, usb};
-use embassy_time::{Delay, Timer};
-use embedded_hal_bus::spi::ExclusiveDevice;
-use log::log;
-use lora_phy::iv::GenericSx126xInterfaceVariant;
-use lora_phy::sx126x::{Sx1262, Sx126x};
-use lora_phy::LoRa;
-use lora_phy::{mod_params::*, sx126x};
 use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
 use moonblokz_radio_lib::RadioCommunicationManager;
 use moonblokz_radio_lib::RadioConfiguration;
 use {defmt_rtt as _, panic_probe as _};
-
-const LORA_FREQUENCY_IN_HZ: u32 = 868_000_000; // warning: set this appropriately for the region
+// Note: frequency is set when initializing RadioDevice.
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<peripherals::USB>;
@@ -56,7 +47,7 @@ async fn main(spawner: Spawner) {
         .await
         .is_err()
     {
-        log!(log::Level::Error, "Failed to initialize radio device");
+        log::error!("Failed to initialize radio device");
     };
 
     let mut radio_communication_manager = RadioCommunicationManager::new();
@@ -69,7 +60,7 @@ async fn main(spawner: Spawner) {
         relay_position_delay: 1,
         scoring_matrix: moonblokz_radio_lib::ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
-    radio_communication_manager.initialize(radio_configuration, spawner, radio_device);
+    _ = radio_communication_manager.initialize(radio_configuration, spawner, radio_device, 1, 1);
 
     /*radio_device.send_message(message::Message {
         payload: b"Hello, LoRa!",
@@ -78,5 +69,5 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
     spawner.spawn(logger_task(driver)).unwrap();
 
-    let mut debug_indicator = Output::new(p.PIN_25, Level::Low);
+    //let mut debug_indicator = Output::new(p.PIN_25, Level::Low);
 }

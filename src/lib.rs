@@ -148,7 +148,7 @@ impl ScoringMatrix {
     // C2: 4 bits
     // D2: 4 bits
     // D3: 4 bits
-    // All the other cells of the scoring matrix is 0
+    // All the other cells of the scoring matrix are 0
     // Next the limits are also represented in the encoded form:
     // Poor limit: 6 bits
     // Excellent limit: 6 bits

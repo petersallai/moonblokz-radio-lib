@@ -1,14 +1,14 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::select_array;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 use env_logger;
 use env_logger::Builder;
 use log::LevelFilter;
-use log::{debug, error, info, log, trace, warn}; // Import the macros you want to use
-use moonblokz_radio_lib::RadioCommunicationManager;
+use log::log;
 use moonblokz_radio_lib::RadioConfiguration;
 use moonblokz_radio_lib::RadioMessage;
 use moonblokz_radio_lib::radio_device_echo::RadioDevice;
+use moonblokz_radio_lib::{RadioCommunicationManager, ScoringMatrix};
 
 #[embassy_executor::task(pool_size = 10)]
 async fn run(node_id: u32, radio_communication_manager: &'static RadioCommunicationManager) -> ! {
@@ -31,7 +31,7 @@ async fn main(spawner: Spawner) {
         .init();
 
     log!(log::Level::Debug, "Starting up");
-    let mut radio_device_1: RadioDevice = RadioDevice::new();
+    let radio_device_1: RadioDevice = RadioDevice::new();
 
     let mut radio_communication_manager_temp_1 = RadioCommunicationManager::new();
     let radio_configuration = RadioConfiguration {
@@ -44,14 +44,14 @@ async fn main(spawner: Spawner) {
         scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
-    radio_communication_manager_temp_1.initialize(radio_configuration, spawner, radio_device_1);
+    _ = radio_communication_manager_temp_1.initialize(radio_configuration, spawner, radio_device_1, 0, 0);
     log!(log::Level::Debug, "radio communication manager 1 started");
     let radio_communication_manager_1: &'static RadioCommunicationManager = Box::leak(Box::new(radio_communication_manager_temp_1));
     log!(log::Level::Debug, "spawning task to send messages to radio communication manager 1");
 
     spawner.spawn(run(1, &radio_communication_manager_1)).unwrap();
 
-    let mut radio_device_2: RadioDevice = RadioDevice::new();
+    let radio_device_2: RadioDevice = RadioDevice::new();
 
     let mut radio_communication_manager_temp_2 = RadioCommunicationManager::new();
     let radio_configuration = RadioConfiguration {
@@ -64,7 +64,7 @@ async fn main(spawner: Spawner) {
         scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
-    let res = radio_communication_manager_temp_2.initialize(radio_configuration, spawner, radio_device_2);
+    let res = radio_communication_manager_temp_2.initialize(radio_configuration, spawner, radio_device_2, 1, 1);
     if res.is_err() {
         log!(log::Level::Error, "Error initializing radio communication manager 2: {:?}", res.err());
     }
@@ -82,7 +82,7 @@ async fn main(spawner: Spawner) {
     loop {
         let (message, _) = select_array([radio_communication_manager_1.receive_message(), radio_communication_manager_2.receive_message()]).await;
         if let Ok(msg) = message {
-            let (anchor_sequence, checksum, data) = msg.get_add_transaction_data().unwrap();
+            let (anchor_sequence, _, _) = msg.get_add_transaction_data().unwrap();
             log!(
                 log::Level::Debug,
                 "Received message: from node: {}, type: {}, sequence: {}, length: {}",
