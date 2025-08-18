@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-embassy-sync = { version = "0.5.0"}
+embassy-sync = { version = "0.6.0"}
 embassy-rp = { version = "0.4.0",features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"],optional = true }
 embedded-hal-bus = { version = "0.1", features = ["async"],optional = true}
 embassy-executor = { version = "0.7.0", features = []}
@@ -18,12 +18,13 @@ rand_core = { version = "0.9", default-features = false}
 rand-wyrand = {version="0.3.0", default-features = false}
 
 [features]
+
 default = ["radio-device-echo"]
 std=["embassy-executor/arch-std","embassy-executor/executor-thread","embassy-time/std"]
 embedded=["embassy-time/defmt","embassy-time/defmt-timestamp-uptime","embassy-executor/defmt","embassy-executor/executor-thread","embassy-executor/task-arena-size-98304","embassy-executor/arch-cortex-m","embassy-executor/executor-interrupt","dep:embassy-rp","dep:embedded-hal-bus","dep:embedded-hal-async","dep:lora-phy"]
 radio-device-echo = ["std"]
 radio-device-lora-sx1262 = ["embedded"]
-
+radio-device-simulator = ["std"]
 
 [dev-dependencies]
 futures = "0.3"

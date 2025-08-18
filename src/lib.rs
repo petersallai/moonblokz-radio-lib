@@ -2,12 +2,16 @@
 #![allow(async_fn_in_trait)] // We control the usage of this trait
 
 #[cfg(any(
-    all(feature = "radio-device-echo", any(feature = "radio-device-lora-sx1262")),
-    all(feature = "radio-device-lora-sx1262", any(feature = "radio-device-echo")),
+    all(feature = "radio-device-echo", any(feature = "radio-device-lora-sx1262", feature = "radio-device-simulator")),
+    all(feature = "radio-device-lora-sx1262", any(feature = "radio-device-echo", feature = "radio-device-simulator")),
+    all(feature = "radio-device-simulator", any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262")),
 ))]
 compile_error!("Only one radio implementation feature can be enabled at a time");
 
-#[cfg(all(not(test), not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262"))))]
+#[cfg(all(
+    not(test),
+    not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262", feature = "radio-device-simulator"))
+))]
 compile_error!("At least one radio implementation feature must be enabled");
 
 #[cfg(feature = "radio-device-lora-sx1262")]
@@ -15,6 +19,9 @@ pub mod radio_device_lora_sx1262;
 
 #[cfg(feature = "radio-device-echo")]
 pub mod radio_device_echo;
+
+#[cfg(feature = "radio-device-simulator")]
+pub mod radio_device_simulator;
 
 #[cfg(feature = "radio-device-lora-sx1262")]
 use crate::radio_device_lora_sx1262::RadioDevice;
@@ -25,6 +32,11 @@ use crate::radio_device_lora_sx1262::radio_device_task;
 use crate::radio_device_echo::RadioDevice;
 #[cfg(feature = "radio-device-echo")]
 use crate::radio_device_echo::radio_device_task;
+
+#[cfg(feature = "radio-device-simulator")]
+use crate::radio_device_simulator::RadioDevice;
+#[cfg(feature = "radio-device-simulator")]
+use crate::radio_device_simulator::radio_device_task;
 
 use crate::tx_scheduler::tx_scheduler_task;
 use embassy_executor::Spawner;
@@ -52,6 +64,12 @@ const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
 const CONNECTION_MATRIX_SIZE: usize = 100;
 const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 const WAIT_POOL_SIZE: usize = 10;
+
+#[cfg(feature = "radio-device-simulator")]
+const MAX_NODE_COUNT: usize = 1000;
+
+#[cfg(not(feature = "radio-device-simulator"))]
+const MAX_NODE_COUNT: usize = 1;
 
 /// Configuration for radio transmission timing
 ///

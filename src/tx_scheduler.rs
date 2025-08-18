@@ -6,6 +6,7 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
+use crate::MAX_NODE_COUNT;
 use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 
 const RANDOM_DELAY_MAX: u64 = 2000; // Maximum random delay in milliseconds
@@ -26,8 +27,7 @@ const RANDOM_DELAY_MAX: u64 = 2000; // Maximum random delay in milliseconds
 /// * `radio_device_sender` - Sender for forwarding packets to the radio device
 /// * `delay_between_packets` - Minimum delay in seconds between individual packets
 /// * `delay_between_messages` - Minimum delay in seconds between message transmissions
-#[cfg_attr(feature = "std", embassy_executor::task(pool_size = 10))]
-#[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
+#[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
 pub(crate) async fn tx_scheduler_task(
     outgoing_message_queue_receiver: OutgoingMessageQueueReceiver,
     rx_state_queue_receiver: crate::RxStateQueueReceiver,

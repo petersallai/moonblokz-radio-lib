@@ -1,5 +1,5 @@
 use crate::relay_manager::RelayResult;
-use crate::{CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
+use crate::{CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, MAX_NODE_COUNT, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
@@ -20,8 +20,7 @@ struct PacketBufferItem {
 
 const PACKET_CHECK_BUFFER_EMPTY_VALUE: u8 = 255;
 
-#[cfg_attr(feature = "std", embassy_executor::task(pool_size = 10))]
-#[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
+#[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
 pub(crate) async fn rx_handler_task(
     incoming_message_queue_sender: IncomingMessageQueueSender,
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
