@@ -59,17 +59,13 @@ pub(crate) async fn rx_handler_task(
                 let rx_packet = received_packet.packet;
                 if rx_packet.total_packet_count() == 1 {
                     let radio_message = RadioMessage::new_from_single_packet(rx_packet);
-                    if let Err(result_error) = incoming_message_queue_sender.try_send(radio_message) {
-                        let failed_message = match result_error {
-                            TrySendError::Full(msg) => msg,
-                        };
-                        log!(
-                            Level::Warn,
-                            "Failed to send single-packet message to incoming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
-                            failed_message.message_type(),
-                            failed_message.sender_node_id(),
-                        );
-                    }
+                    process_message(
+                        radio_message,
+                        received_packet.link_quality,
+                        outgoing_message_queue_sender,
+                        incoming_message_queue_sender,
+                        &mut relay_manager,
+                    );
                 } else if rx_packet.total_packet_count() == 0 {
                     log!(Level::Warn, "Received empty packet, skipping");
                     continue;
@@ -245,6 +241,12 @@ fn process_message(
             // No action needed
         }
         RelayResult::SendMessage(message) => {
+            log!(
+                Level::Debug,
+                "RelayManager requested to send message: type: {}, sender_node_id: {}",
+                message.message_type(),
+                message.sender_node_id()
+            );
             let result = outgoing_message_queue_sender.try_send(message);
             if let Err(result_error) = result {
                 let failed_message = match result_error {

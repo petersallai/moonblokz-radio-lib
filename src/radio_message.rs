@@ -566,6 +566,7 @@ impl<'a> Iterator for MempoolIterator<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct RadioPacket {
     pub(crate) data: [u8; RADIO_PACKET_SIZE],
     pub(crate) length: usize,

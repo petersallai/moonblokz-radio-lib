@@ -66,10 +66,10 @@ const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 const WAIT_POOL_SIZE: usize = 10;
 
 #[cfg(feature = "radio-device-simulator")]
-const MAX_NODE_COUNT: usize = 1000;
+pub const MAX_NODE_COUNT: usize = 1000;
 
 #[cfg(not(feature = "radio-device-simulator"))]
-const MAX_NODE_COUNT: usize = 1;
+pub const MAX_NODE_COUNT: usize = 1;
 
 /// Configuration for radio transmission timing
 ///
@@ -236,9 +236,9 @@ pub enum MessageProcessingResult {
     NewSupportAdded(RadioMessage),                  // a new support has been added to the node
 }
 
-struct ReceivedPacket {
-    packet: RadioPacket,
-    link_quality: u8,
+pub struct ReceivedPacket {
+    pub packet: RadioPacket,
+    pub link_quality: u8,
 }
 
 enum RadioCommunicationManagerState {

@@ -1,5 +1,7 @@
 use core::cmp::{max, min};
 use embassy_time::{Duration, Instant};
+use log::log;
+
 use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
@@ -270,6 +272,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             // Send an echo request to all connected nodes
             let echo_request = RadioMessage::new_request_echo(self.own_node_id);
             self.next_echo_request_time = Instant::now() + Duration::from_secs(echo_request_interval as u64);
+            log!(log::Level::Debug, "Sending echo request.");
             return RelayResult::SendMessage(echo_request);
         }
 
@@ -366,6 +369,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             }
             //send a reply echo message
             let echo_response = RadioMessage::new_echo(self.own_node_id, message.sender_node_id(), last_link_quality);
+
             return RelayResult::SendMessage(echo_response);
         }
 
