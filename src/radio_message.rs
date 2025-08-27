@@ -201,6 +201,11 @@ impl RadioMessage {
         Ok(())
     }
 
+    pub(crate) fn get_echo_result_item_count(&self) -> usize {
+        // Get the number of echo result items in the message
+        (self.length - 1) / 6
+    }
+
     pub fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32, packet_number: u8) -> Self {
         // Create a new RadioMessage with a specific message type for block part requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
@@ -568,16 +573,16 @@ impl<'a> Iterator for MempoolIterator<'a> {
 
 #[derive(Clone)]
 pub struct RadioPacket {
-    pub(crate) data: [u8; RADIO_PACKET_SIZE],
-    pub(crate) length: usize,
+    pub data: [u8; RADIO_PACKET_SIZE],
+    pub length: usize,
 }
 
 impl RadioPacket {
-    pub(crate) fn message_type(&self) -> u8 {
+    pub fn message_type(&self) -> u8 {
         self.data[0]
     }
 
-    pub(crate) fn total_packet_count(&self) -> u8 {
+    pub fn total_packet_count(&self) -> u8 {
         let message_type = self.message_type();
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
             if self.length < 15 {
@@ -589,7 +594,7 @@ impl RadioPacket {
         }
     }
 
-    pub(crate) fn packet_index(&self) -> u8 {
+    pub fn packet_index(&self) -> u8 {
         let message_type = self.message_type();
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
             if self.length < 15 {

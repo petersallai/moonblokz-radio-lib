@@ -64,6 +64,7 @@ const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
 const CONNECTION_MATRIX_SIZE: usize = 100;
 const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 const WAIT_POOL_SIZE: usize = 10;
+const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 10;
 
 #[cfg(feature = "radio-device-simulator")]
 pub const MAX_NODE_COUNT: usize = 1000;

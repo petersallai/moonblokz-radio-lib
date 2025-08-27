@@ -68,7 +68,7 @@ pub(crate) async fn tx_scheduler_task(
                 let packet_count = message.get_packet_count();
                 for i in 0..packet_count {
                     // Get the packet to send
-                    log!(log::Level::Debug, "Sending packet {}/{}", i + 1, packet_count);
+                    //                    log!(log::Level::Debug, "Sending packet {}/{}", i + 1, packet_count);
                     if let Some(packet) = message.get_packet(i) {
                         // Attempt to send the packet to the radio device
                         match radio_device_sender.try_send(packet) {

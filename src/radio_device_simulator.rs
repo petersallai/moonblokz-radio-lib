@@ -53,7 +53,7 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
 
                 match radio_device.input_queue_receiver.receive().await {
                     RadioInputMessage::ReceivePacket(pkt) => {
-                        //                        log!(Level::Debug, "Simulator: got RadioInputMessage::ReceivePacket");
+                        log!(Level::Debug, "Simulator: got RadioInputMessage::ReceivePacket");
                         rx_sender.send(pkt).await;
                     }
                     RadioInputMessage::CADResponse(busy) => {

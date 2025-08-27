@@ -1,4 +1,5 @@
 use core::cmp::{max, min};
+use core::result;
 use embassy_time::{Duration, Instant};
 use log::log;
 
@@ -6,6 +7,7 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
+use crate::ECHO_RESPONSES_WAIT_POOL_SIZE;
 use crate::MessageProcessingResult;
 use crate::ScoringMatrix;
 use crate::{MessageType, RadioMessage};
@@ -211,6 +213,7 @@ pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_P
     connection_matrix_nodes: [u32; CONNECTION_MATRIX_SIZE],
     connected_nodes_count: usize,
     wait_pool: WaitPool<WAIT_POOL_SIZE, CONNECTION_MATRIX_SIZE>,
+    echo_responses_wait_pool: [Option<(Instant, u32, u8)>; ECHO_RESPONSES_WAIT_POOL_SIZE],
     next_echo_request_time: Instant,
     echo_gathering_end_time: Option<Instant>,
     echo_request_minimal_interval: u32,
@@ -236,7 +239,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             connection_matrix: [[0; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
             connection_matrix_nodes: [0; CONNECTION_MATRIX_SIZE],
             connected_nodes_count: 1, // Start with one node (own node)
+
             wait_pool: WaitPool::new(wait_position_delay as u64, rng.next_u64()),
+            echo_responses_wait_pool: [None; ECHO_RESPONSES_WAIT_POOL_SIZE],
             next_echo_request_time: Instant::now() + Duration::from_secs(rng.next_u64() % echo_request_minimal_interval as u64),
             echo_gathering_end_time: None,
             echo_request_minimal_interval,
@@ -251,10 +256,52 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     }
 
     pub(crate) fn calculate_next_timeout(&self) -> Instant {
-        return min(
-            min(self.next_echo_request_time, self.echo_gathering_end_time.unwrap_or(Instant::MAX)),
-            self.wait_pool.next_activation_time().unwrap_or(Instant::MAX),
+        let mut min_timeout = self.next_echo_request_time;
+        if let Some(timeout) = self.echo_gathering_end_time {
+            min_timeout = min(min_timeout, timeout);
+        }
+        if let Some(timeout) = self.wait_pool.next_activation_time() {
+            min_timeout = min(min_timeout, timeout);
+        }
+
+        for i in 0..self.echo_responses_wait_pool.len() {
+            if let Some((instant, _, _)) = self.echo_responses_wait_pool[i] {
+                min_timeout = min(min_timeout, instant);
+            }
+        }
+        return min_timeout;
+    }
+
+    fn add_echo_response(&mut self, node_id: u32, quality: u8) -> Option<RadioMessage> {
+        let instant = Instant::now() + Duration::from_secs(self.rng.next_u64() % (self.echo_gathering_timeout as u64 * 30));
+        for slot in self.echo_responses_wait_pool.iter_mut() {
+            if slot.is_none() {
+                *slot = Some((instant, node_id, quality));
+                return None;
+            }
+        }
+
+        let mut next_index = 0;
+        let mut next_instant = self.echo_responses_wait_pool[0].as_ref().unwrap().0;
+        for i in 1..self.echo_responses_wait_pool.len() {
+            if let Some((instant, _, _)) = self.echo_responses_wait_pool[i] {
+                if instant < next_instant {
+                    next_instant = instant;
+                    next_index = i;
+                }
+            }
+        }
+
+        let result = RadioMessage::new_echo(
+            self.own_node_id,
+            self.echo_responses_wait_pool[next_index].as_ref().unwrap().1,
+            self.echo_responses_wait_pool[next_index].as_ref().unwrap().2,
         );
+
+        self.echo_responses_wait_pool[next_index] = Some((instant, node_id, quality));
+        log!(log::Level::Debug, "Echo responses wait pool full, replacing oldest entry.");
+
+        Some(result)
     }
 
     pub(crate) fn process_timed_tasks(&mut self) -> RelayResult {
@@ -272,7 +319,6 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             // Send an echo request to all connected nodes
             let echo_request = RadioMessage::new_request_echo(self.own_node_id);
             self.next_echo_request_time = Instant::now() + Duration::from_secs(echo_request_interval as u64);
-            log!(log::Level::Debug, "Sending echo request.");
             return RelayResult::SendMessage(echo_request);
         }
 
@@ -308,6 +354,21 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                             return RelayResult::SendMessage(message);
                         }
                     }
+                }
+            }
+        }
+
+        for i in 0..self.echo_responses_wait_pool.len() {
+            if let Some((instant, _, _)) = self.echo_responses_wait_pool[i] {
+                if instant <= Instant::now() {
+                    let response = RadioMessage::new_echo(
+                        self.own_node_id,
+                        self.echo_responses_wait_pool[i].as_ref().unwrap().1,
+                        self.echo_responses_wait_pool[i].as_ref().unwrap().2,
+                    );
+
+                    self.echo_responses_wait_pool[i] = None; // Clear the slot
+                    return RelayResult::SendMessage(response);
                 }
             }
         }
@@ -368,9 +429,14 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 }
             }
             //send a reply echo message
-            let echo_response = RadioMessage::new_echo(self.own_node_id, message.sender_node_id(), last_link_quality);
+            //let echo_response = RadioMessage::new_echo(self.own_node_id, message.sender_node_id(), last_link_quality);
+            let result_opt = self.add_echo_response(message.sender_node_id(), last_link_quality);
 
-            return RelayResult::SendMessage(echo_response);
+            if let Some(result) = result_opt {
+                return RelayResult::SendMessage(result);
+            }
+
+            return RelayResult::None;
         }
 
         // If message is an echo_response
