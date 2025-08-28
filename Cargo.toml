@@ -19,7 +19,7 @@ rand-wyrand = {version="0.3.0", default-features = false}
 
 [features]
 
-default = ["radio-device-simulator"]
+default = ["radio-device-echo"]
 std=["embassy-executor/arch-std","embassy-executor/executor-thread","embassy-time/std"]
 embedded=["embassy-time/defmt","embassy-time/defmt-timestamp-uptime","embassy-executor/defmt","embassy-executor/executor-thread","embassy-executor/task-arena-size-98304","embassy-executor/arch-cortex-m","embassy-executor/executor-interrupt","dep:embassy-rp","dep:embedded-hal-bus","dep:embedded-hal-async","dep:lora-phy"]
 radio-device-echo = ["std"]

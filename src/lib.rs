@@ -438,6 +438,68 @@ impl RadioCommunicationManager {
         // TODO: Implementation for reporting the status of message processing
     }
 }
+
+// --- Define the expected operational range for your radio ---
+// These values are typical for LoRaWAN.
+
+/// The lowest RSSI you expect to be able to decode a signal.
+const RSSI_MIN: i16 = -120;
+/// The RSSI of a very strong signal, close to the receiver.
+const RSSI_MAX: i16 = -30;
+
+/// The lowest SNR for a decodable signal (can be negative for LoRa).
+const SNR_MIN: i16 = -20;
+/// A very clean signal's SNR.
+const SNR_MAX: i16 = 10;
+
+/// Normalizes a given value to a 0-63 scale based on defined min/max bounds.
+///
+/// The function clamps the value within the bounds, so inputs outside the
+/// min/max range will result in 0 or 63 respectively.
+///
+/// # Arguments
+/// * `value` - The input value to normalize (e.g., -90 for RSSI).
+/// * `min` - The bottom of the input range (e.g., -120).
+/// * `max` - The top of the input range (e.g., -30).
+///
+/// # Returns
+/// A `u8` value scaled to the 0-63 range.
+pub fn normalize(value: i16, min: i16, max: i16) -> u8 {
+    // 1. Clamp the value to ensure it's within the defined range.
+    let clamped_value = value.max(min).min(max);
+
+    // 2. Shift the range to start at 0.
+    let shifted_value = clamped_value - min;
+
+    // 3. Scale the value to the 0-63 range using integer arithmetic.
+    // We multiply by 63 first to maintain precision before the division.
+    let scaled_value = (shifted_value as u32 * 63) / (max - min) as u32;
+
+    scaled_value as u8
+}
+
+/// Calculates the combined link quality from RSSI and SNR.
+///
+/// # Arguments
+/// * `rssi` - The raw RSSI value in dBm (e.g., -88).
+/// * `snr` - The raw SNR value in dB (e.g., 7).
+///
+/// # Returns
+/// A `u8` score in the 0-63 range.
+pub fn calculate_link_quality(rssi: i16, snr: i16) -> u8 {
+    // 1. Normalize both RSSI and SNR to a common 0-127 scale.
+    let norm_rssi = normalize(rssi, RSSI_MIN, RSSI_MAX);
+    let norm_snr = normalize(snr, SNR_MIN, SNR_MAX);
+
+    // 2. Calculate the weighted average using integer math.
+    // Weights: 7 for SNR, 3 for RSSI. Total weight is 10.
+    // We use u32 for the intermediate calculation to prevent overflow.
+    let quality = (3 * norm_rssi as u32 + 7 * norm_snr as u32) / 10;
+
+    // The result is guaranteed to be in the 0-127 range.
+    quality as u8
+}
+
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;

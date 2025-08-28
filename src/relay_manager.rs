@@ -606,10 +606,10 @@ mod tests {
         let req = RadioMessage::new_request_echo(sender_id);
         let res = rm.process_received_message(&req, last_lq);
 
-        // Should send an Echo reply
+        // With echo pooling, no immediate echo is sent
         match res {
-            RelayResult::SendMessage(m) => assert_eq!(m.message_type(), MessageType::Echo as u8),
-            _ => panic!("Expected SendMessage(Echo)"),
+            RelayResult::None => {}
+            other => panic!("Expected None (pooled echo), got: {:?}", core::mem::discriminant(&other)),
         }
 
         // Sender should be inserted at index 1 (index 0 is own node)
@@ -617,6 +617,14 @@ mod tests {
         // Dirty bit should be incremented and quality preserved (zero initially)
         assert_eq!(rm.connection_matrix[sender_index][0] & DIRTY_MASK, 1 << DIRTY_SHIFT);
         assert_eq!(rm.connection_matrix[sender_index][0] & QUALITY_MASK, 0);
+
+        // An echo response should be queued in the wait pool
+        let has_pooled_echo = rm
+            .echo_responses_wait_pool
+            .iter()
+            .flatten()
+            .any(|(_, node, q)| *node == sender_id && *q == last_lq);
+        assert!(has_pooled_echo, "expected an echo response to be queued");
     }
 
     #[test]

@@ -322,11 +322,9 @@ mod tests {
         let msg = RadioMessage::new_request_echo(2);
         process_message(msg, 10, out_tx, in_tx, &mut rm);
 
-        // Outgoing should have one Echo
-        let sent = out_rx.try_receive().expect("expected an outgoing message");
-        assert_eq!(sent.message_type(), MessageType::Echo as u8);
-
-        // Incoming should be empty
+        // With echo pooling, there is no immediate outgoing echo
+        assert!(out_rx.try_receive().is_err(), "no immediate echo expected");
+        // Incoming should be empty as well
         assert!(in_rx.try_receive().is_err());
     }
 
