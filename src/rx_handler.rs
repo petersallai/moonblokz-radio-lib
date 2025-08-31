@@ -85,24 +85,24 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if packet_index == total_packet_count - 1 {
-                        //we can drop messages it there is an unhandled message in the queue
                         _ = rx_state_queue_sender.try_send(RxState::PacketedRxEnded);
                     } else {
                         _ = rx_state_queue_sender.try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8));
                     }
 
                     if packet_index as usize >= INCOMING_PACKET_BUFFER_SIZE {
-                        //we can drop messages it there is an unhandled message in the queue
                         log!(Level::Error, "Packet index out of bounds: {}", packet_index);
                         continue;
                     }
 
                     let mut already_received = false;
                     let mut empty_index = PACKET_CHECK_BUFFER_EMPTY_VALUE;
+                    let mut packet_header: [u8; 13] = [0u8; 13];
+                    packet_header.copy_from_slice(&rx_packet.data[0..13]);
 
                     for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                         if let Some(packet) = &packet_buffer[i] {
-                            if packet.packet.data[0..15] == rx_packet.data[0..15] {
+                            if packet.packet.same_message(&packet_header) && packet.packet.packet_index() == packet_index as u8 {
                                 // This packet is already in the buffer, skip it
                                 already_received = true;
                                 break;
@@ -147,9 +147,6 @@ pub(crate) async fn rx_handler_task(
                         empty_index = oldest_index;
                     }
 
-                    let mut packet_header: [u8; 13] = [0u8; 13];
-                    packet_header.copy_from_slice(&rx_packet.data[0..13]);
-
                     // Store the packet in the buffer
                     packet_buffer[empty_index as usize] = Some(PacketBufferItem {
                         packet: rx_packet,
@@ -160,7 +157,7 @@ pub(crate) async fn rx_handler_task(
                     packet_check_buffer.fill(PACKET_CHECK_BUFFER_EMPTY_VALUE);
                     for i in 0..INCOMING_PACKET_BUFFER_SIZE {
                         if let Some(packet_item) = &packet_buffer[i] {
-                            if packet_item.packet.data[0..13] == packet_header {
+                            if packet_item.packet.same_message(&packet_header) {
                                 // Mark this packet as received
                                 packet_check_buffer[packet_item.packet.packet_index() as usize] = i as u8;
                             }
@@ -342,7 +339,7 @@ mod tests {
         let in_rx = incoming.receiver();
 
         let mut rm = new_rm();
-        let msg = RadioMessage::new_add_block(3, 100, 0xDEAD_BEEF, &[1, 2, 3]);
+        let msg = RadioMessage::new_add_block(3, 100, &[1, 2, 3]);
         process_message(msg, 5, out_tx, in_tx, &mut rm);
 
         // Incoming should have the AddBlock
@@ -369,11 +366,11 @@ mod tests {
         let mut rm = new_rm();
 
         // Pre-populate wait pool with a message
-        let orig = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9]);
+        let orig = RadioMessage::new_add_block(3, 5, &[9]);
         rm.process_processing_result(MessageProcessingResult::NewBlockAdded(orig));
 
         // Process an equal message: should be treated as duplicate
-        let dup = RadioMessage::new_add_block(4, 5, 0x1111_2222, &[9]); // different sender ignored in equality
+        let dup = RadioMessage::new_add_block(4, 5, &[9]); // different sender ignored in equality
         process_message(dup, 0, out_tx, in_tx, &mut rm);
 
         assert!(in_rx.try_receive().is_err());

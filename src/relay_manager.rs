@@ -1,5 +1,4 @@
 use core::cmp::{max, min};
-use core::result;
 use embassy_time::{Duration, Instant};
 use log::log;
 
@@ -680,7 +679,7 @@ mod tests {
         const W: usize = 4;
         let mut rm = new_manager::<N, W>();
 
-        let msg = RadioMessage::new_add_block(3, 100, 0xAAAA_BBBB, &[1, 2, 3, 4]);
+        let msg = RadioMessage::new_add_block(3, 100, &[1, 2, 3, 4]);
         rm.process_processing_result(MessageProcessingResult::NewBlockAdded(msg));
 
         // Wait pool should contain the message
@@ -689,7 +688,7 @@ mod tests {
             .items
             .iter()
             .flatten()
-            .any(|it| it.message == RadioMessage::new_add_block(3, 100, 0xAAAA_BBBB, &[1, 2, 3, 4]));
+            .any(|it| it.message == RadioMessage::new_add_block(3, 100, &[1, 2, 3, 4]));
         assert!(contains);
     }
 
@@ -699,11 +698,11 @@ mod tests {
         const W: usize = 4;
         let mut rm = new_manager::<N, W>();
 
-        let msg1 = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9, 9, 9]);
+        let msg1 = RadioMessage::new_add_block(3, 5, &[9, 9, 9]);
         rm.process_processing_result(MessageProcessingResult::NewBlockAdded(msg1));
 
         // Receiving the same (logically equal) message should return AlreadyHaveMessage
-        let msg2 = RadioMessage::new_add_block(3, 5, 0x1111_2222, &[9, 9, 9]);
+        let msg2 = RadioMessage::new_add_block(3, 5, &[9, 9, 9]);
         let res = rm.process_received_message(&msg2, 0);
         match res {
             RelayResult::AlreadyHaveMessage => {}

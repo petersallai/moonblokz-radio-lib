@@ -39,6 +39,7 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
     log!(Level::Info, "Simulated radio device task started");
     let mut rng = WyRand::seed_from_u64(rng_seed);
     loop {
+        let mut next_cad = true;
         match select(radio_device.input_queue_receiver.receive(), tx_receiver.receive()).await {
             Either::First(message) => match message {
                 RadioInputMessage::ReceivePacket(pkt) => {
@@ -49,14 +50,17 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
                 }
             },
             Either::Second(packet) => loop {
-                radio_device.output_queue_sender.send(RadioOutputMessage::RequestCAD).await;
+                if next_cad {
+                    radio_device.output_queue_sender.send(RadioOutputMessage::RequestCAD).await;
+                }
 
                 match radio_device.input_queue_receiver.receive().await {
                     RadioInputMessage::ReceivePacket(pkt) => {
-                        log!(Level::Debug, "Simulator: got RadioInputMessage::ReceivePacket");
                         rx_sender.send(pkt).await;
+                        next_cad = false;
                     }
                     RadioInputMessage::CADResponse(busy) => {
+                        next_cad = true;
                         if busy {
                             Timer::after(embassy_time::Duration::from_millis(
                                 CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,

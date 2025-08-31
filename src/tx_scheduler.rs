@@ -192,7 +192,7 @@ mod tests {
         let part = RADIO_PACKET_SIZE - 15;
         let total_len = part * 2 + 7; // 3 packets total (2 full + 1 partial)
         let payload: Vec<u8> = (0..total_len).map(|i| (i % 251) as u8).collect();
-        let msg = RadioMessage::new_add_block(1, 0x1010_2020, 0xAABB_CCDD, &payload);
+        let msg = RadioMessage::new_add_block(1, 0x1010_2020, &payload);
         let expected_packets = msg.get_packet_count();
 
         // Enqueue the message for transmission

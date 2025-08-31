@@ -24,6 +24,22 @@ impl EchoResultItem {
     }
 }
 
+fn crc32c(data: &[u8]) -> u32 {
+    const POLY: u32 = 0x82F63B78;
+    let mut crc: u32 = 0xFFFF_FFFF;
+
+    for &b in data {
+        let mut cur = (crc ^ (b as u32)) & 0xFF;
+        for _ in 0..8 {
+            let mask = (cur & 1).wrapping_neg();
+            cur = (cur >> 1) ^ (POLY & mask);
+        }
+        crc = (crc >> 8) ^ cur;
+    }
+
+    crc ^ 0xFFFF_FFFF
+}
+
 // Iterator for echo result data
 pub struct EchoResultIterator<'a> {
     payload: &'a [u8],
@@ -71,7 +87,7 @@ impl<'a> Iterator for EchoResultIterator<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum MessageType {
+pub enum MessageType {
     RequestEcho = 0x01,
     Echo = 0x02,
     EchoResult = 0x03,
@@ -83,10 +99,11 @@ pub(crate) enum MessageType {
     Support = 0x09,
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioMessage {
-    pub(crate) payload: [u8; RADIO_MAX_MESSAGE_SIZE],
-    pub(crate) length: usize,
+    pub payload: [u8; RADIO_MAX_MESSAGE_SIZE],
+    pub length: usize,
 }
 
 impl RadioMessage {
@@ -221,7 +238,10 @@ impl RadioMessage {
         RadioMessage { payload, length: 14 }
     }
 
-    pub fn new_add_block(node_id: u32, sequence: u32, payload_checksum: u32, payload: &[u8]) -> Self {
+    pub fn new_add_block(node_id: u32, sequence: u32, payload: &[u8]) -> Self {
+        //calculate payload checksum
+        let payload_checksum = crc32c(payload);
+
         // Create a new RadioMessage with a specific message type for adding blocks
         let mut full_payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         full_payload[0] = MessageType::AddBlock as u8;
@@ -605,6 +625,26 @@ impl RadioPacket {
             return 0; // For other message types, always 0
         }
     }
+
+    pub(crate) fn same_message(&self, other_header: &[u8]) -> bool {
+        if self.message_type() != other_header[0] {
+            return false;
+        }
+
+        if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
+            if self.length < 13 || other_header.len() < 13 {
+                return false;
+            }
+
+            if self.data[5..13] == other_header[5..13] {
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
 }
 
 impl PartialEq for RadioMessage {
@@ -902,7 +942,6 @@ mod tests {
     #[test]
     fn add_block_fragmentation_and_reassembly() {
         let seq = 0x0102_0304;
-        let csum = 0xA1B2_C3D4;
         // Payload length spanning multiple packets
         let part = RADIO_PACKET_SIZE - 15; // bytes per packet chunk
         let total_len = part * 3 + 10; // 3 full + 1 partial
@@ -911,7 +950,7 @@ mod tests {
         for (i, b) in payload_vec.iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
-        let msg = RadioMessage::new_add_block(5, seq, csum, &payload_vec);
+        let msg = RadioMessage::new_add_block(5, seq, &payload_vec);
 
         // Packetization
         let count = msg.get_packet_count();

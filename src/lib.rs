@@ -53,12 +53,12 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 // Re-export types from radio_message module
-pub(crate) use radio_message::MessageType;
+pub use radio_message::MessageType;
 pub use radio_message::{EchoResultItem, EchoResultIterator, RadioMessage, RadioPacket};
 
 //Hardware dependent constants, that affect compatibility of a node
-const RADIO_PACKET_SIZE: usize = 200;
-const RADIO_MAX_MESSAGE_SIZE: usize = 2000;
+const RADIO_PACKET_SIZE: usize = 215;
+const RADIO_MAX_MESSAGE_SIZE: usize = 2015;
 
 //Hardware dependent constants, that only affect efficiency of a node, but does not result incompatibility
 const CONNECTION_MATRIX_SIZE: usize = 100;
@@ -138,6 +138,7 @@ static RX_STATE_QUEUE: RxStateQueue = Channel::new();
 
 const PROCESS_RESULT_QUEUE_SIZE: usize = 10;
 type ProcessResultQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
 type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
 
 #[cfg(feature = "embedded")]
@@ -247,6 +248,7 @@ enum RadioCommunicationManagerState {
     Initialized {
         outgoing_message_queue_sender: OutgoingMessageQueueSender,
         incoming_message_queue_receiver: IncomingMessageQueueReceiver,
+        process_result_queue_sender: ProcessResultQueueSender,
     },
 }
 
@@ -404,6 +406,7 @@ impl RadioCommunicationManager {
         self.state = RadioCommunicationManagerState::Initialized {
             outgoing_message_queue_sender: outgoing_message_queue.sender(),
             incoming_message_queue_receiver: incoming_message_queue.receiver(),
+            process_result_queue_sender: process_result_queue.sender(),
         };
         Ok(())
     }
@@ -434,8 +437,16 @@ impl RadioCommunicationManager {
         return Ok(incoming_message_queue_receiver.receive().await);
     }
 
-    pub fn report_message_processing_status(&self, _message: &RadioMessage, _success: bool) {
-        // TODO: Implementation for reporting the status of message processing
+    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult, _success: bool) {
+        let process_result_queue_sender = match &self.state {
+            RadioCommunicationManagerState::Uninitialized => {
+                return;
+            }
+            RadioCommunicationManagerState::Initialized {
+                process_result_queue_sender, ..
+            } => process_result_queue_sender,
+        };
+        process_result_queue_sender.try_send(message_processing_result).ok();
     }
 }
 
