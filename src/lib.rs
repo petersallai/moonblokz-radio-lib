@@ -44,6 +44,7 @@ mod radio_message;
 mod relay_manager;
 mod rx_handler;
 mod tx_scheduler;
+pub mod wait_pool;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;

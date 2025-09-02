@@ -36,11 +36,17 @@ pub(crate) async fn tx_scheduler_task(
     delay_between_messages: u8,
     rng_seed: u64,
 ) -> ! {
+    let mut rng = WyRand::seed_from_u64(rng_seed);
+    log!(
+        log::Level::Debug,
+        "TX Scheduler Task started, delay_between messages: {}",
+        delay_between_messages
+    );
+
     let mut last_tx_time = Instant::now();
     let mut rx_state_delay_timeout = Instant::now();
     let delay_between_messages_duration = Duration::from_secs(delay_between_messages as u64);
     let delay_between_packets_duration = Duration::from_secs(delay_between_packets as u64);
-    let mut rng = WyRand::seed_from_u64(rng_seed);
     log!(log::Level::Info, "TX Scheduler Task started");
     loop {
         match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {

@@ -238,12 +238,6 @@ fn process_message(
             // No action needed
         }
         RelayResult::SendMessage(message) => {
-            log!(
-                Level::Debug,
-                "RelayManager requested to send message: type: {}, sender_node_id: {}",
-                message.message_type(),
-                message.sender_node_id()
-            );
             let result = outgoing_message_queue_sender.try_send(message);
             if let Err(result_error) = result {
                 let failed_message = match result_error {
