@@ -59,7 +59,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             connection_matrix_nodes: [0; CONNECTION_MATRIX_SIZE],
             connected_nodes_count: 1, // Start with one node (own node)
 
-            wait_pool: WaitPool::new(wait_position_delay as u64, scoring_matrix, rng.next_u64()),
+            wait_pool: WaitPool::new(wait_position_delay as u64, scoring_matrix, rng.next_u64(), own_node_id),
             echo_responses_wait_pool: [None; ECHO_RESPONSES_WAIT_POOL_SIZE],
             next_echo_request_time: Instant::now() + Duration::from_secs(rng.next_u64() % echo_request_minimal_interval as u64),
             echo_gathering_end_time: None,
@@ -70,6 +70,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             rng,
         };
         result.connection_matrix_nodes[0] = own_node_id; // Initialize the first node as own_node_id
+        result.connection_matrix[0][0] = 63; // Self-connection with max quality
         return result;
     }
 
@@ -135,13 +136,6 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 ))
                 + self.rng.next_u32() % (self.echo_gathering_timeout as u32 * 60);
 
-            log!(
-                log::Level::Debug,
-                "[{}] Next echo request time: {:?}, connection count: {}",
-                self.own_node_id,
-                echo_request_interval,
-                self.connected_nodes_count
-            );
             self.echo_gathering_end_time = Some(Instant::now() + Duration::from_secs(self.echo_gathering_timeout as u64 * 60)); //multiply by 60 to convert minutes to seconds
 
             // Send an echo request to all connected nodes
@@ -179,6 +173,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                         if item.activation_time <= Instant::now() {
                             // Extract the message by taking it out and replacing with None
                             let message = core::mem::take(item_opt).unwrap().message;
+                            log!(log::Level::Debug, "[{:?}] Sending relayed message", self.own_node_id);
                             return RelayResult::SendMessage(message);
                         }
                     }
@@ -205,12 +200,35 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     }
 
     pub(crate) fn process_received_message(&mut self, message: &RadioMessage, last_link_quality: u8) -> RelayResult {
+        /*         log::debug!("Own node id: {:?}", self.own_node_id);
+
+               let mut nz: [u32; CONNECTION_MATRIX_SIZE] = [0; CONNECTION_MATRIX_SIZE];
+               let mut nz_len = 0usize;
+               for i in 0..self.connected_nodes_count {
+                   let id = self.connection_matrix_nodes[i];
+                   if id != 0 {
+                       nz[nz_len] = id;
+                       nz_len += 1;
+                   }
+               }
+               // Log only the top-left connected_nodes_count x connected_nodes_count submatrix
+               // and mask to only show link quality (lower 6 bits), hiding dirty bits
+               for r in 0..self.connected_nodes_count {
+                   let mut row_masked: [u8; CONNECTION_MATRIX_SIZE] = [0; CONNECTION_MATRIX_SIZE];
+                   for c in 0..self.connected_nodes_count {
+                       row_masked[c] = self.connection_matrix[r][c] & QUALITY_MASK;
+                   }
+                   log::debug!("Node {}: {:?}", self.connection_matrix_nodes[r], &row_masked[..self.connected_nodes_count]);
+               }
+        */
         // find the connection matrix index for the sender node
         let mut sender_index_opt = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id());
         if sender_index_opt.is_none() {
             // If the sender node is not in the connection matrix, add it
             if self.connected_nodes_count < CONNECTION_MATRIX_SIZE {
                 sender_index_opt = Some(self.connected_nodes_count);
+                // Initialize self-connection only; defer link qualities to echo traffic
+                self.connection_matrix[self.connected_nodes_count][self.connected_nodes_count] = 63;
                 self.connection_matrix_nodes[self.connected_nodes_count] = message.sender_node_id();
                 self.connected_nodes_count += 1;
             } else {
@@ -229,6 +247,8 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 if lowest_quality < last_link_quality {
                     sender_index_opt = Some(lowest_quality_index);
                     self.connection_matrix_nodes[lowest_quality_index] = message.sender_node_id();
+                    self.connection_matrix[lowest_quality_index] = empty_connections().clone();
+                    self.connection_matrix[lowest_quality_index][lowest_quality_index] = 63;
                 }
             }
         }
@@ -244,6 +264,10 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         if message.message_type() == MessageType::RequestEcho as u8 {
             //set the dirty flag on connection matrix or zero the connection matrix item if it is already set
             for i in 0..CONNECTION_MATRIX_SIZE {
+                // Skip the diagonal (sender to itself)
+                if i == sender_index {
+                    continue;
+                }
                 let value = self.connection_matrix[sender_index][i];
                 // get the upper 2 bits of the value as a small counter
                 let mut counter = (value & DIRTY_MASK) >> DIRTY_SHIFT;
@@ -273,7 +297,8 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 let target_index_opt = self.connection_matrix_nodes.iter().position(|&id| id == target_node);
                 if let Some(target_index) = target_index_opt {
                     // Update the connection matrix with the link quality
-                    self.connection_matrix[sender_index][target_index] = link_quality;
+                    self.connection_matrix[sender_index][0] = last_link_quality;
+                    self.connection_matrix[target_index][sender_index] = link_quality;
                 }
             }
         }
