@@ -147,6 +147,8 @@ pub(crate) async fn rx_handler_task(
                         empty_index = oldest_index;
                     }
 
+                    let last_sender = rx_packet.sender_node_id();
+
                     // Store the packet in the buffer
                     packet_buffer[empty_index as usize] = Some(PacketBufferItem {
                         packet: rx_packet,
@@ -178,7 +180,6 @@ pub(crate) async fn rx_handler_task(
                     if all_packets_received {
                         // All packets received, create a RadioMessage
                         let mut radio_message = RadioMessage::new_empty_message();
-
                         // Check if all packets for this message have been received
                         for i in 0..total_packet_count {
                             let packet_index = packet_check_buffer[i as usize];
@@ -190,6 +191,9 @@ pub(crate) async fn rx_handler_task(
                                 log!(Level::Error, "Packet index {} not found in buffer", packet_index);
                             }
                         }
+
+                        radio_message.set_sender_node_id(last_sender);
+
                         process_message(
                             radio_message,
                             received_packet.link_quality,

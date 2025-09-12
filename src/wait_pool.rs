@@ -107,11 +107,16 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     for i in 0..CONNECTION_MATRIX_SIZE {
                         item.nodes_connection[i] = max(item.nodes_connection[i], sender_connections[i] & QUALITY_MASK);
                     }
-                    log!(
-                        log::Level::Debug,
-                        "Own score: {:?}",
-                        item.calculate_score(own_connections, &self.scoring_matrix)
-                    );
+                    if self.own_node_id == 1 {
+                        log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
+                        log!(log::Level::Debug, "Own connections: {:?}", own_connections);
+                        log!(log::Level::Debug, "Nodes connections: {:?}", item.nodes_connection);
+                        log!(
+                            log::Level::Debug,
+                            "Own score: {:?}",
+                            item.calculate_score(own_connections, &self.scoring_matrix)
+                        );
+                    }
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
                         log!(log::Level::Debug, "Message removed from wait pool");
                         *item_opt = None;
@@ -131,7 +136,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
     pub(crate) fn add_or_update_message(
         &mut self,
-        message: RadioMessage,
+        mut message: RadioMessage,
         connection_matrix: &[[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
         own_connections: &[u8; CONNECTION_MATRIX_SIZE],
         sender_connections: &[u8; CONNECTION_MATRIX_SIZE],
@@ -144,11 +149,16 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                         item.nodes_connection[i] = max(item.nodes_connection[i], sender_connections[i] & QUALITY_MASK);
                     }
 
-                    log!(
-                        log::Level::Debug,
-                        "Own score: {:?}",
-                        item.calculate_score(own_connections, &self.scoring_matrix)
-                    );
+                    if self.own_node_id == 1 {
+                        log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
+                        log!(log::Level::Debug, "Own connections: {:?}", own_connections);
+                        log!(log::Level::Debug, "Nodes connections: {:?}", item.nodes_connection);
+                        log!(
+                            log::Level::Debug,
+                            "Own score: {:?}",
+                            item.calculate_score(own_connections, &self.scoring_matrix)
+                        );
+                    }
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
                         log!(log::Level::Debug, "Message removed from wait pool");
                         *item_opt = None;
@@ -164,7 +174,8 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             } else {
                 log!(log::Level::Debug, "[{}] Message added to wait pool", self.own_node_id);
 
-                log!(log::Level::Debug, "sender connections: {:?}", sender_connections);
+                message.set_sender_node_id(self.own_node_id);
+
                 let mut new_item = WaitPoolItem {
                     message,
                     activation_time: Instant::now(),
@@ -175,11 +186,16 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     new_item.nodes_connection[i] = sender_connections[i] & QUALITY_MASK;
                 }
 
-                log!(
-                    log::Level::Debug,
-                    "Own score: {:?}",
-                    new_item.calculate_score(own_connections, &self.scoring_matrix)
-                );
+                if self.own_node_id == 1 {
+                    log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
+                    log!(log::Level::Debug, "Own connections: {:?}", own_connections);
+                    log!(log::Level::Debug, "Nodes connections: {:?}", new_item.nodes_connection);
+                    log!(
+                        log::Level::Debug,
+                        "Own score: {:?}",
+                        new_item.calculate_score(own_connections, &self.scoring_matrix)
+                    );
+                }
                 if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
                     log!(log::Level::Debug, "Message not added to the pool");
                     return;

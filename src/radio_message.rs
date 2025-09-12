@@ -377,6 +377,11 @@ impl RadioMessage {
         u32::from_le_bytes(node_id_bytes)
     }
 
+    pub fn set_sender_node_id(&mut self, node_id: u32) {
+        let node_id_bytes = node_id.to_le_bytes();
+        self.payload[1..5].copy_from_slice(&node_id_bytes);
+    }
+
     pub fn length(&self) -> usize {
         self.length
     }
@@ -591,62 +596,6 @@ impl<'a> Iterator for MempoolIterator<'a> {
     }
 }
 
-#[derive(Clone)]
-pub struct RadioPacket {
-    pub data: [u8; RADIO_PACKET_SIZE],
-    pub length: usize,
-}
-
-impl RadioPacket {
-    pub fn message_type(&self) -> u8 {
-        self.data[0]
-    }
-
-    pub fn total_packet_count(&self) -> u8 {
-        let message_type = self.message_type();
-        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
-            if self.length < 15 {
-                return 0; // Not enough data for packet count
-            }
-            return self.data[13];
-        } else {
-            return 1; // For other message types, always 1 packet
-        }
-    }
-
-    pub fn packet_index(&self) -> u8 {
-        let message_type = self.message_type();
-        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
-            if self.length < 15 {
-                return 0; // Not enough data for packet index
-            }
-            return self.data[14];
-        } else {
-            return 0; // For other message types, always 0
-        }
-    }
-
-    pub(crate) fn same_message(&self, other_header: &[u8]) -> bool {
-        if self.message_type() != other_header[0] {
-            return false;
-        }
-
-        if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
-            if self.length < 13 || other_header.len() < 13 {
-                return false;
-            }
-
-            if self.data[5..13] == other_header[5..13] {
-                return true;
-            } else {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-}
-
 impl PartialEq for RadioMessage {
     fn eq(&self, other: &Self) -> bool {
         // Check message type equality first
@@ -828,6 +777,68 @@ impl PartialEq for RadioMessage {
                 // Unknown message type
                 false
             }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RadioPacket {
+    pub data: [u8; RADIO_PACKET_SIZE],
+    pub length: usize,
+}
+
+impl RadioPacket {
+    pub fn message_type(&self) -> u8 {
+        self.data[0]
+    }
+
+    pub fn sender_node_id(&self) -> u32 {
+        let mut node_id_bytes = [0u8; 4];
+        node_id_bytes.copy_from_slice(&self.data[1..5]);
+        u32::from_le_bytes(node_id_bytes)
+    }
+
+    pub fn total_packet_count(&self) -> u8 {
+        let message_type = self.message_type();
+        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
+            if self.length < 15 {
+                return 0; // Not enough data for packet count
+            }
+            return self.data[13];
+        } else {
+            return 1; // For other message types, always 1 packet
+        }
+    }
+
+    pub fn packet_index(&self) -> u8 {
+        let message_type = self.message_type();
+        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
+            if self.length < 15 {
+                return 0; // Not enough data for packet index
+            }
+            return self.data[14];
+        } else {
+            return 0; // For other message types, always 0
+        }
+    }
+
+    pub(crate) fn same_message(&self, other_header: &[u8]) -> bool {
+        if self.message_type() != other_header[0] {
+            return false;
+        }
+
+        if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
+            if self.length < 13 || other_header.len() < 13 {
+                return false;
+            }
+
+            if self.data[5..13] == other_header[5..13] {
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            return false;
         }
     }
 }

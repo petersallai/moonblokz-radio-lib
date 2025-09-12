@@ -145,10 +145,10 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, Criti
 #[cfg(feature = "embedded")]
 static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 pub struct ScoringMatrix {
-    pub(crate) matrix: [[u8; 4]; 4],
-    pub(crate) poor_limit: u8,
-    pub(crate) excellent_limit: u8,
-    pub(crate) relay_score_limit: u8,
+    pub matrix: [[u8; 4]; 4],
+    pub poor_limit: u8,
+    pub excellent_limit: u8,
+    pub relay_score_limit: u8,
 }
 
 impl ScoringMatrix {
