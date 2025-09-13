@@ -47,7 +47,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
 
     pub(crate) fn calculate_own_position(
         &self,
-        sender_connections: &[u8; CONNECTION_MATRIX_SIZE],
+        item_connections: &[u8; CONNECTION_MATRIX_SIZE],
         own_connections: &[u8; CONNECTION_MATRIX_SIZE],
         connection_matrix: &[[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
         scoring_matrix: &ScoringMatrix,
@@ -56,10 +56,12 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
         //log!(log::Level::Debug, "Own score: {}", own_score);
         let mut own_position = 0;
         for i in 1..CONNECTION_MATRIX_SIZE {
-            let score = self.calculate_score(&connection_matrix[i], scoring_matrix);
-            //  log!(log::Level::Debug, "[{i}] Other score: {}", score);
-            if score > own_score {
-                own_position += 1;
+            if item_connections[i] > scoring_matrix.poor_limit {
+                let score = self.calculate_score(&connection_matrix[i], scoring_matrix);
+                //  log!(log::Level::Debug, "[{i}] Other score: {}", score);
+                if score > own_score {
+                    own_position += 1;
+                }
             }
         }
 
@@ -123,7 +125,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     } else {
                         item.activation_time = Instant::now()
                             + Duration::from_secs(
-                                item.calculate_own_position(sender_connections, own_connections, connection_matrix, &self.scoring_matrix)
+                                item.calculate_own_position(&item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix)
                                     * self.relay_position_delay,
                             )
                             + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));
@@ -164,7 +166,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                         *item_opt = None;
                         return;
                     }
-                    let position = item.calculate_own_position(sender_connections, own_connections, connection_matrix, &self.scoring_matrix);
+                    let position = item.calculate_own_position(&item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
 
                     item.activation_time = Instant::now()
                         + Duration::from_secs(position * self.relay_position_delay)
@@ -197,11 +199,15 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     );
                 }
                 if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                    log!(log::Level::Debug, "Message not added to the pool");
+                    log!(
+                        log::Level::Debug,
+                        "Message not added to the pool, score: {}",
+                        new_item.calculate_score(own_connections, &self.scoring_matrix)
+                    );
                     return;
                 }
 
-                let position = new_item.calculate_own_position(sender_connections, own_connections, connection_matrix, &self.scoring_matrix);
+                let position = new_item.calculate_own_position(&new_item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
 
                 log!(log::Level::Debug, "position: {:?}", position);
                 new_item.activation_time = Instant::now()
@@ -223,7 +229,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             new_item.nodes_connection[i] = sender_connections[i] & QUALITY_MASK;
         }
 
-        let position = new_item.calculate_own_position(sender_connections, own_connections, connection_matrix, &self.scoring_matrix);
+        let position = new_item.calculate_own_position(&new_item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
         new_item.activation_time = Instant::now()
             + Duration::from_secs(position * self.relay_position_delay)
             + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));
