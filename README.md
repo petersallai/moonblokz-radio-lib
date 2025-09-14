@@ -1,5 +1,8 @@
 # MoonBlokz radio library
 
+MoonBlokz is a Decentralized Physical Infrastructure Network (DePIN) system optimized for microcontrollers and radio communication, operating independently of any central infrastructure. [https://www.moonblokz.com](https://www.moonblokz.com).
+
+
 ## Description of the algorithms
 
 There are nodes on the network that communicate using only broadcast radio signals. The majority of the nodes have a fixed position and are working continuously. There are some moving nodes, but they are not the majority of the network. The network is ad-hoc, and the nodes are independent. There is no central authority available to create a structured network (such as partitions).
