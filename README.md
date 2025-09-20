@@ -2,6 +2,9 @@
 
 MoonBlokz is a Decentralized Physical Infrastructure Network (DePIN) system optimized for microcontrollers and radio communication, operating independently of any central infrastructure. [https://www.moonblokz.com](https://www.moonblokz.com).
 
+[![Watch the video](https://img.youtube.com/vi/_-OoIMKLwGY/hqdefault.jpg)](
+  https://www.youtube.com/watch?v=_-OoIMKLwGY "Watch on YouTube"
+)
 
 ## Description of the algorithms
 
