@@ -60,6 +60,7 @@ pub use radio_message::{EchoResultItem, EchoResultIterator, RadioMessage, RadioP
 //Hardware dependent constants, that affect compatibility of a node
 const RADIO_PACKET_SIZE: usize = 215;
 const RADIO_MAX_MESSAGE_SIZE: usize = 2015;
+const RADIO_MAX_PACKET_COUNT: usize = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE; // Ceiling division
 
 //Hardware dependent constants, that only affect efficiency of a node, but does not result incompatibility
 const CONNECTION_MATRIX_SIZE: usize = 100;
@@ -79,7 +80,7 @@ pub const MAX_NODE_COUNT: usize = 1;
 /// radio spectrum usage and avoid interference.
 pub struct RadioConfiguration {
     /// Delay in seconds between individual packets within a message
-    pub delay_between_tx_packets: u8,
+    pub delay_between_tx_packets: u16,
     /// Delay in seconds between complete message transmissions
     pub delay_between_tx_messages: u8,
     pub echo_request_minimal_interval: u32,
@@ -87,6 +88,7 @@ pub struct RadioConfiguration {
     pub echo_gathering_timeout: u8,
     pub relay_position_delay: u8,
     pub scoring_matrix: ScoringMatrix,
+    pub retry_interval_for_missing_packets: u8,
 }
 pub enum SendMessageError {
     ChannelFull,
@@ -357,6 +359,7 @@ impl RadioCommunicationManager {
             echo_gathering_timeout,
             relay_position_delay,
             scoring_matrix,
+            retry_interval_for_missing_packets,
         } = radio_config;
 
         // Spawn the radio task
@@ -395,6 +398,7 @@ impl RadioCommunicationManager {
             echo_gathering_timeout,
             relay_position_delay,
             scoring_matrix,
+            retry_interval_for_missing_packets,
             own_node_id,
             rng.next_u64(),
         ));
@@ -520,13 +524,14 @@ mod tests {
     #[test]
     fn radio_config_constructs() {
         let _cfg = RadioConfiguration {
-            delay_between_tx_packets: 0,
-            delay_between_tx_messages: 0,
-            echo_request_minimal_interval: 1,
-            echo_messages_target_interval: 1,
-            echo_gathering_timeout: 1,
-            relay_position_delay: 1,
-            scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
+            delay_between_tx_packets: 1,
+            delay_between_tx_messages: 20,
+            echo_request_minimal_interval: 86400,
+            echo_messages_target_interval: 100,
+            echo_gathering_timeout: 10,
+            relay_position_delay: 10,
+            scoring_matrix: ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 82u8, 143u8]),
+            retry_interval_for_missing_packets: 60,
         };
     }
 

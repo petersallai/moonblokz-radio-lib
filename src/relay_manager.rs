@@ -200,7 +200,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     }
 
     pub(crate) fn process_received_message(&mut self, message: &RadioMessage, last_link_quality: u8) -> RelayResult {
-        if self.own_node_id == 1 {
+        /*if self.own_node_id == 13 || self.own_node_id == 14 {
             log::debug!("Own node id: {:?}", self.own_node_id);
 
             let mut nz: [u32; CONNECTION_MATRIX_SIZE] = [0; CONNECTION_MATRIX_SIZE];
@@ -221,7 +221,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 }
                 log::debug!("Node {}: {:?}", self.connection_matrix_nodes[r], &row_masked[..self.connected_nodes_count]);
             }
-        }
+        }*/
 
         // find the connection matrix index for the sender node
         let mut sender_index_opt = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id());
@@ -282,6 +282,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     self.connection_matrix[sender_index][i] = (counter << DIRTY_SHIFT) | (value & QUALITY_MASK);
                 }
             }
+
+            //set the connection quality to the last link quality from sender to self
+            self.connection_matrix[sender_index][0] = last_link_quality;
             //send a reply echo message
             //let echo_response = RadioMessage::new_echo(self.own_node_id, message.sender_node_id(), last_link_quality);
             let result_opt = self.add_echo_response(message.sender_node_id(), last_link_quality);
@@ -343,6 +346,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     &self.connection_matrix[0],
                     &self.connection_matrix[sender_index],
                     &self.connection_matrix,
+                    &self.connection_matrix_nodes,
                 );
                 return RelayResult::AlreadyHaveMessage;
             }
@@ -359,6 +363,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     &self.connection_matrix,
                     &self.connection_matrix[0],
                     &empty_connections::<CONNECTION_MATRIX_SIZE>(),
+                    &self.connection_matrix_nodes,
                 );
             }
             MessageProcessingResult::RequestedBlockFound(message) => {
@@ -367,6 +372,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     &self.connection_matrix,
                     &self.connection_matrix[0],
                     &empty_connections::<CONNECTION_MATRIX_SIZE>(),
+                    &self.connection_matrix_nodes,
                 );
             }
             MessageProcessingResult::RequestedBlockPartFound(message, _, _) => {
@@ -375,19 +381,20 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     &self.connection_matrix,
                     &self.connection_matrix[0],
                     &empty_connections::<CONNECTION_MATRIX_SIZE>(),
+                    &self.connection_matrix_nodes,
                 );
             }
             MessageProcessingResult::NewBlockAdded(message) => {
-                if self.own_node_id == 1 {
+                /*if self.own_node_id == 13 || self.own_node_id == 14 {
                     log!(log::Level::Debug, "New block added from: {:?}", message.sender_node_id());
-                }
+                }*/
 
                 //find sender in nodes connection list
                 let sender_index = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id()).unwrap_or(0);
-                if self.own_node_id == 1 {
+                /*if self.own_node_id == 13 || self.own_node_id == 14 {
                     log!(log::Level::Debug, "Sender index: {:?}", sender_index);
                     log!(log::Level::Debug, "Sender connections: {:?}", self.connection_matrix[sender_index]);
-                }
+                }*/
 
                 let sender_connections = if sender_index > 0 {
                     self.connection_matrix[sender_index]
@@ -397,8 +404,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
 
                 // Add the new block to the wait pool
 
-                self.wait_pool
-                    .add_or_update_message(message, &self.connection_matrix, &self.connection_matrix[0], &sender_connections);
+                self.wait_pool.add_or_update_message(
+                    message,
+                    &self.connection_matrix,
+                    &self.connection_matrix[0],
+                    &sender_connections,
+                    &self.connection_matrix_nodes,
+                );
             }
             MessageProcessingResult::NewTransactionAdded(message) => {
                 let sender_index = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id()).unwrap_or(0);
@@ -408,8 +420,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     empty_connections::<CONNECTION_MATRIX_SIZE>()
                 };
 
-                self.wait_pool
-                    .add_or_update_message(message, &self.connection_matrix, &self.connection_matrix[0], &sender_connections);
+                self.wait_pool.add_or_update_message(
+                    message,
+                    &self.connection_matrix,
+                    &self.connection_matrix[0],
+                    &sender_connections,
+                    &self.connection_matrix_nodes,
+                );
             }
             MessageProcessingResult::SendReplyTransaction(message) => {
                 self.wait_pool.add_or_update_message(
@@ -417,6 +434,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     &self.connection_matrix,
                     &self.connection_matrix[0],
                     &empty_connections::<CONNECTION_MATRIX_SIZE>(),
+                    &self.connection_matrix_nodes,
                 );
             }
             MessageProcessingResult::NewSupportAdded(message) => {
@@ -427,8 +445,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     empty_connections::<CONNECTION_MATRIX_SIZE>()
                 };
 
-                self.wait_pool
-                    .add_or_update_message(message, &self.connection_matrix, &self.connection_matrix[0], &sender_connections);
+                self.wait_pool.add_or_update_message(
+                    message,
+                    &self.connection_matrix,
+                    &self.connection_matrix[0],
+                    &sender_connections,
+                    &self.connection_matrix_nodes,
+                );
             }
         }
     }
@@ -486,14 +509,13 @@ mod tests {
         const N: usize = 8;
         const W: usize = 4;
         let mut rm = new_manager::<N, W>();
-
-        // Prime sender at index 1 via echo request
+        // Manually register sender and target nodes
         let sender_id = 2u32;
-        let _ = rm.process_received_message(&RadioMessage::new_request_echo(sender_id), 10);
-
-        // Manually register a target node at index 2
         let target_id = 42u32;
+        rm.connection_matrix_nodes[1] = sender_id;
         rm.connection_matrix_nodes[2] = target_id;
+        rm.connection_matrix[1][1] = 63;
+        rm.connection_matrix[2][2] = 63;
         rm.connected_nodes_count = 3;
 
         // Echo from sender -> target with link quality

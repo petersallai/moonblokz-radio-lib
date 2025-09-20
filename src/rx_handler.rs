@@ -1,6 +1,6 @@
 use crate::relay_manager::RelayResult;
 use crate::{CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, MAX_NODE_COUNT, MessageType, RxState, ScoringMatrix, WAIT_POOL_SIZE};
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either3, Either4, select3, select4};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
 use log::{Level, log};
@@ -32,6 +32,7 @@ pub(crate) async fn rx_handler_task(
     echo_gathering_timeout: u8,
     relay_position_delay: u8,
     scoring_matrix: ScoringMatrix,
+    retry_interval_for_missing_packets: u8,
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
@@ -47,15 +48,17 @@ pub(crate) async fn rx_handler_task(
         own_node_id,
         rng.next_u64(),
     );
+    let mut next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
     loop {
-        match select3(
+        match select4(
             rx_packet_queue_receiver.receive(),
             process_result_queue_receiver.receive(),
             Timer::at(relay_manager.calculate_next_timeout()),
+            Timer::at(next_missing_packet_check),
         )
         .await
         {
-            Either3::First(received_packet) => {
+            Either4::First(received_packet) => {
                 let rx_packet = received_packet.packet;
                 if rx_packet.total_packet_count() == 1 {
                     let radio_message = RadioMessage::new_from_single_packet(rx_packet);
@@ -204,10 +207,10 @@ pub(crate) async fn rx_handler_task(
                     }
                 }
             }
-            Either3::Second(process_result) => {
+            Either4::Second(process_result) => {
                 relay_manager.process_processing_result(process_result);
             }
-            Either3::Third(_) => {
+            Either4::Third(_) => {
                 if let RelayResult::SendMessage(response_message) = relay_manager.process_timed_tasks() {
                     let result = outgoing_message_queue_sender.try_send(response_message);
                     if let Err(result_error) = result {
@@ -222,6 +225,29 @@ pub(crate) async fn rx_handler_task(
                         );
                     };
                 }
+            }
+            Either4::Fourth(_) => {
+                // Time to check for missing packets
+                next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
+
+                let mut missing_packets_item: Option<&PacketBufferItem> = None;
+
+                for i in 0..INCOMING_PACKET_BUFFER_SIZE {
+                    if let Some(packet_item) = &packet_buffer[i] {
+                        let packet_age = Instant::now() - packet_item.arrival_time;
+                        if packet_age.as_secs() >= retry_interval_for_missing_packets as u64 {
+                            if let Some(missing_packets) = &missing_packets_item {
+                                if packet_item.arrival_time > missing_packets.arrival_time {
+                                    missing_packets_item = Some(&packet_item);
+                                }
+                            } else {
+                                missing_packets_item = Some(&packet_item);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(missing_packets) = missing_packets_item {}
             }
         }
     }

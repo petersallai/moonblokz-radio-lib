@@ -101,15 +101,18 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         own_connections: &[u8; CONNECTION_MATRIX_SIZE],
         sender_connections: &[u8; CONNECTION_MATRIX_SIZE],
         connection_matrix: &[[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
+        //DEBUG CODE
+        connection_matrix_nodes: &[u32; CONNECTION_MATRIX_SIZE],
+        //-------END OF DEBUG CODE
     ) {
         for item_opt in self.items.iter_mut() {
             if let Some(item) = item_opt {
                 if item.message == *message {
-                    log!(log::Level::Debug, "[{:?}] updating waitpool item", self.own_node_id);
+                    //log!(log::Level::Debug, "[{:?}] updating waitpool item", self.own_node_id);
                     for i in 0..CONNECTION_MATRIX_SIZE {
                         item.nodes_connection[i] = max(item.nodes_connection[i], sender_connections[i] & QUALITY_MASK);
                     }
-                    if self.own_node_id == 1 {
+                    /*                     if self.own_node_id == 13 || self.own_node_id == 14 {
                         log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
                         log!(log::Level::Debug, "Own connections: {:?}", own_connections);
                         log!(log::Level::Debug, "Nodes connections: {:?}", item.nodes_connection);
@@ -119,8 +122,9 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                             item.calculate_score(own_connections, &self.scoring_matrix)
                         );
                     }
+                    */
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                        log!(log::Level::Debug, "Message removed from wait pool");
+                        //log!(log::Level::Debug, "Message removed from wait pool");
                         *item_opt = None;
                     } else {
                         item.activation_time = Instant::now()
@@ -128,8 +132,35 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                                 item.calculate_own_position(&item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix)
                                     * self.relay_position_delay,
                             )
-                            + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));
+                            + Duration::from_millis(self.rng.next_u64() % 300);
+                        //DEBUG CODE
+
+                        let mut best_score = item.calculate_score(own_connections, &self.scoring_matrix);
+                        let mut best_node = self.own_node_id;
+                        for i in 1..CONNECTION_MATRIX_SIZE {
+                            if item.nodes_connection[i] > self.scoring_matrix.poor_limit {
+                                let score = item.calculate_score(&connection_matrix[i], &self.scoring_matrix);
+                                if score > best_score {
+                                    best_node = connection_matrix_nodes[i];
+                                    best_score = score;
+                                }
+                            }
+                        }
+
+                        let position = item.calculate_own_position(&item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
+                        log!(
+                            log::Level::Debug,
+                            "relay_delay: node_id: {}, score: {}, position: {}, best node to relay: {}, score: {}",
+                            self.own_node_id,
+                            item.calculate_score(own_connections, &self.scoring_matrix),
+                            position,
+                            best_node,
+                            best_score
+                        );
+
+                        //-------END OF DEBUG CODE
                     }
+
                     return;
                 }
             }
@@ -142,16 +173,19 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         connection_matrix: &[[u8; CONNECTION_MATRIX_SIZE]; CONNECTION_MATRIX_SIZE],
         own_connections: &[u8; CONNECTION_MATRIX_SIZE],
         sender_connections: &[u8; CONNECTION_MATRIX_SIZE],
+        //DEBUG CODE
+        connection_matrix_nodes: &[u32; CONNECTION_MATRIX_SIZE],
+        //-------END OF DEBUG CODE
     ) {
         for item_opt in self.items.iter_mut() {
             if let Some(item) = item_opt {
                 if item.message == message {
-                    log!(log::Level::Debug, "[{:?}] updating(add or) waitpool item", self.own_node_id);
+                    //log!(log::Level::Debug, "[{:?}] updating(add or) waitpool item", self.own_node_id);
                     for i in 0..CONNECTION_MATRIX_SIZE {
                         item.nodes_connection[i] = max(item.nodes_connection[i], sender_connections[i] & QUALITY_MASK);
                     }
-
-                    if self.own_node_id == 1 {
+                    /*
+                    if self.own_node_id == 13 || self.own_node_id == 14 {
                         log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
                         log!(log::Level::Debug, "Own connections: {:?}", own_connections);
                         log!(log::Level::Debug, "Nodes connections: {:?}", item.nodes_connection);
@@ -161,20 +195,20 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                             item.calculate_score(own_connections, &self.scoring_matrix)
                         );
                     }
+                    */
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                        log!(log::Level::Debug, "Message removed from wait pool");
+                        //  log!(log::Level::Debug, "Message removed from wait pool");
                         *item_opt = None;
                         return;
                     }
                     let position = item.calculate_own_position(&item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
 
-                    item.activation_time = Instant::now()
-                        + Duration::from_secs(position * self.relay_position_delay)
-                        + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));
+                    item.activation_time =
+                        Instant::now() + Duration::from_secs(position * self.relay_position_delay) + Duration::from_millis(self.rng.next_u64() % 300);
                     return;
                 }
             } else {
-                log!(log::Level::Debug, "[{}] Message added to wait pool", self.own_node_id);
+                // log!(log::Level::Debug, "[{}] Message added to wait pool", self.own_node_id);
 
                 message.set_sender_node_id(self.own_node_id);
 
@@ -188,7 +222,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     new_item.nodes_connection[i] = sender_connections[i] & QUALITY_MASK;
                 }
 
-                if self.own_node_id == 1 {
+                /*   if self.own_node_id == 13 || self.own_node_id == 14 {
                     log!(log::Level::Debug, "Sender connections: {:?}", sender_connections);
                     log!(log::Level::Debug, "Own connections: {:?}", own_connections);
                     log!(log::Level::Debug, "Nodes connections: {:?}", new_item.nodes_connection);
@@ -197,19 +231,44 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                         "Own score: {:?}",
                         new_item.calculate_score(own_connections, &self.scoring_matrix)
                     );
-                }
+                }*/
                 if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                    log!(
+                    /*     log!(
                         log::Level::Debug,
                         "Message not added to the pool, score: {}",
                         new_item.calculate_score(own_connections, &self.scoring_matrix)
-                    );
+                    );*/
                     return;
                 }
 
                 let position = new_item.calculate_own_position(&new_item.nodes_connection, own_connections, connection_matrix, &self.scoring_matrix);
 
-                log!(log::Level::Debug, "position: {:?}", position);
+                //DEBUG CODE
+
+                let mut best_score = new_item.calculate_score(own_connections, &self.scoring_matrix);
+                let mut best_node = self.own_node_id;
+                for i in 1..CONNECTION_MATRIX_SIZE {
+                    if new_item.nodes_connection[i] > self.scoring_matrix.poor_limit {
+                        let score = new_item.calculate_score(&connection_matrix[i], &self.scoring_matrix);
+                        if score > best_score {
+                            best_node = connection_matrix_nodes[i];
+                            best_score = score;
+                        }
+                    }
+                }
+
+                log!(
+                    log::Level::Debug,
+                    "relay_delay: node_id: {}, score: {}, position: {}, best node to relay: {}, score: {}",
+                    self.own_node_id,
+                    new_item.calculate_score(own_connections, &self.scoring_matrix),
+                    position,
+                    best_node,
+                    best_score
+                );
+
+                //-------END OF DEBUG CODE
+
                 new_item.activation_time = Instant::now()
                     + Duration::from_secs(position * self.relay_position_delay)
                     + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));

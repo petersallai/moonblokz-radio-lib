@@ -32,7 +32,7 @@ pub(crate) async fn tx_scheduler_task(
     outgoing_message_queue_receiver: OutgoingMessageQueueReceiver,
     rx_state_queue_receiver: crate::RxStateQueueReceiver,
     radio_device_sender: TxPacketQueueSender,
-    delay_between_packets: u8,
+    delay_between_packets: u16,
     delay_between_messages: u8,
     rng_seed: u64,
 ) -> ! {
@@ -46,7 +46,7 @@ pub(crate) async fn tx_scheduler_task(
     let mut last_tx_time = Instant::now();
     let mut rx_state_delay_timeout = Instant::now();
     let delay_between_messages_duration = Duration::from_secs(delay_between_messages as u64);
-    let delay_between_packets_duration = Duration::from_secs(delay_between_packets as u64);
+    let delay_between_packets_duration = Duration::from_millis(delay_between_packets as u64);
     log!(log::Level::Info, "TX Scheduler Task started");
     loop {
         match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {
@@ -95,7 +95,7 @@ pub(crate) async fn tx_scheduler_task(
             Either::Second(rxstate) => match rxstate {
                 RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
                     let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
-                    let new_delay_timeout = Instant::now() + Duration::from_secs(remaining_packets * delay_between_packets as u64);
+                    let new_delay_timeout = Instant::now() + Duration::from_millis(remaining_packets * delay_between_packets as u64);
                     rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
                 }
                 RxState::PacketedRxEnded => {
@@ -112,15 +112,15 @@ pub(crate) async fn tx_scheduler_step(
     outgoing_message_queue_receiver: OutgoingMessageQueueReceiver,
     rx_state_queue_receiver: crate::RxStateQueueReceiver,
     radio_device_sender: TxPacketQueueSender,
-    delay_between_packets: u8,
+    delay_between_packets: u16,
     delay_between_messages: u8,
     rng_seed: u64,
 ) {
-    // A single-iteration version of the scheduler loop for testing.
+    // A single-iteration version of the scheduler loop
     let mut last_tx_time = Instant::now();
     let mut rx_state_delay_timeout = Instant::now();
     let delay_between_messages_duration = Duration::from_secs(delay_between_messages as u64);
-    let delay_between_packets_duration = Duration::from_secs(delay_between_packets as u64);
+    let delay_between_packets_duration = Duration::from_millis(delay_between_packets as u64);
     let mut rng = WyRand::seed_from_u64(rng_seed);
 
     match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {
@@ -161,7 +161,7 @@ pub(crate) async fn tx_scheduler_step(
             RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
                 log!(log::Level::Debug, "Received RX state update in progress");
                 let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
-                let new_delay_timeout = Instant::now() + Duration::from_secs(remaining_packets * delay_between_packets as u64);
+                let new_delay_timeout = Instant::now() + Duration::from_millis(remaining_packets * delay_between_packets as u64);
                 rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
             }
             RxState::PacketedRxEnded => {

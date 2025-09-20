@@ -11,8 +11,8 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
-const CAD_MINIMAL_WAIT_TIME: u64 = 1000; // Minimum wait time in milliseconds after CAD command
-const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 1000; // Maximum additional wait time in milliseconds after CAD command
+const CAD_MINIMAL_WAIT_TIME: u64 = 300; // Minimum wait time in milliseconds after CAD command
+const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200; // Maximum additional wait time in milliseconds after CAD command
 
 const RADIO_OUTPUT_QUEUE_SIZE: usize = 10;
 pub type RadioOutputQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioOutputMessage, RADIO_OUTPUT_QUEUE_SIZE>;
@@ -62,6 +62,7 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
                     RadioInputMessage::CADResponse(busy) => {
                         next_cad = true;
                         if busy {
+                            log!(Level::Info, "CAD detected channel busy, waiting before retrying");
                             Timer::after(embassy_time::Duration::from_millis(
                                 CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
                             ))

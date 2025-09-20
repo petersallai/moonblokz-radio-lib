@@ -223,7 +223,7 @@ impl RadioMessage {
         (self.length - 1) / 6
     }
 
-    pub fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32, packet_number: u8) -> Self {
+    pub fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32) -> Self {
         // Create a new RadioMessage with a specific message type for block part requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::RequestBlockPart as u8;
@@ -233,9 +233,25 @@ impl RadioMessage {
         payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
         let checksum_bytes = payload_checksum.to_le_bytes();
         payload[9..9 + checksum_bytes.len()].copy_from_slice(&checksum_bytes);
-        payload[13] = packet_number;
+        payload[13] = 0; //current index count set to 0
 
         RadioMessage { payload, length: 14 }
+    }
+
+    pub fn add_packet_index_to_request_block_part(&mut self, packet_index: u8) -> Result<(), ()> {
+        // Add a packet index to the request block part message
+        if self.message_type() != MessageType::RequestBlockPart as u8 {
+            return Err(());
+        }
+
+        // The message must fit into a single radio packet
+        if self.length + 1 > RADIO_PACKET_SIZE {
+            return Err(());
+        }
+        self.payload[self.payload[13] as usize + 14] = packet_index;
+
+        self.payload[13] += 1;
+        Ok(())
     }
 
     pub fn new_add_block(node_id: u32, sequence: u32, payload: &[u8]) -> Self {
@@ -293,6 +309,10 @@ impl RadioMessage {
 
     pub fn add_mempool_item(&mut self, anchor_sequence: u32, payload_checksum: u32) -> Result<(), ()> {
         // Add a mempool item to the message payload
+        if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
+            return Err(());
+        }
+
         // The message must fit into a single radio packet
         if self.length + 8 > RADIO_PACKET_SIZE {
             return Err(());
@@ -1001,12 +1021,18 @@ mod tests {
 
     #[test]
     fn request_block_part_fields_via_eq() {
-        let a = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678, 9);
-        let b = RadioMessage::new_request_block_part(9999, 0xCAFEBABE, 0x1234_5678, 9);
-        // Equality ignores sender for this type, compares seq/checksum/part
+        let mut a = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678);
+        a.add_packet_index_to_request_block_part(9).unwrap(); // count = 1
+
+        let mut b = RadioMessage::new_request_block_part(9999, 0xCAFEBABE, 0x1234_5678);
+        b.add_packet_index_to_request_block_part(9).unwrap(); // count = 1
+        // Equality ignores sender for this type, compares seq/checksum and count of requested parts
         assert_eq!(a, b);
-        // Different packet number -> not equal
-        let c = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678, 10);
+
+        // Different count of packet indices -> not equal under current semantics
+        let mut c = RadioMessage::new_request_block_part(44, 0xCAFEBABE, 0x1234_5678);
+        c.add_packet_index_to_request_block_part(10).unwrap();
+        c.add_packet_index_to_request_block_part(11).unwrap(); // count = 2
         assert_ne!(a, c);
     }
 }
