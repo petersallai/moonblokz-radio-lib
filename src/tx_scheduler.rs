@@ -175,7 +175,7 @@ pub(crate) async fn tx_scheduler_step(
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::{RADIO_PACKET_SIZE, RadioMessage};
+    use crate::RadioMessage;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::channel::Channel;
 
@@ -195,7 +195,8 @@ mod tests {
         let tx_rx = tx.receiver();
 
         // Build a message that spans multiple packets
-        let part = RADIO_PACKET_SIZE - 15;
+    // Per-packet payload size excludes RADIO_MULTI_PACKET_PACKET_HEADER_SIZE bytes
+    let part = crate::RADIO_PACKET_SIZE - crate::RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
         let total_len = part * 2 + 7; // 3 packets total (2 full + 1 partial)
         let payload: Vec<u8> = (0..total_len).map(|i| (i % 251) as u8).collect();
         let msg = RadioMessage::new_add_block(1, 0x1010_2020, &payload);

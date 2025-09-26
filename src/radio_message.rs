@@ -1,5 +1,4 @@
-use crate::{RADIO_MAX_MESSAGE_SIZE, RADIO_PACKET_SIZE};
-
+use crate::{RADIO_MAX_MESSAGE_SIZE, RADIO_MAX_PACKET_COUNT, RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, RADIO_MULTI_PACKET_PACKET_HEADER_SIZE, RADIO_PACKET_SIZE};
 // Data structure for echo result items
 pub struct EchoResultItem {
     pub neighbor_node: u32,
@@ -86,6 +85,49 @@ impl<'a> Iterator for EchoResultIterator<'a> {
     }
 }
 
+// Data structure for request block part item (single packet index)
+pub struct RequestBlockPartItem {
+    pub packet_index: u8,
+}
+
+impl RequestBlockPartItem {
+    /// Get the requested packet index
+    pub fn packet_index(&self) -> u8 {
+        self.packet_index
+    }
+}
+
+// Iterator for request block part indices
+pub struct RequestBlockPartIterator<'a> {
+    payload: &'a [u8],
+    position: usize,
+    end_position: usize,
+}
+
+impl<'a> RequestBlockPartIterator<'a> {
+    pub(crate) fn new(payload: &'a [u8], start_position: usize, end_position: usize) -> Self {
+        Self {
+            payload,
+            position: start_position,
+            end_position,
+        }
+    }
+}
+
+impl<'a> Iterator for RequestBlockPartIterator<'a> {
+    type Item = RequestBlockPartItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position >= self.end_position {
+            return None;
+        }
+        let idx = self.payload[self.position];
+        self.position += 1;
+
+        Some(RequestBlockPartItem { packet_index: idx })
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum MessageType {
     RequestEcho = 0x01,
@@ -104,22 +146,25 @@ pub enum MessageType {
 pub struct RadioMessage {
     pub payload: [u8; RADIO_MAX_MESSAGE_SIZE],
     pub length: usize,
+    pub packets_to_send: Option<[bool; RADIO_MAX_PACKET_COUNT]>,
 }
 
 impl RadioMessage {
-    pub fn new_from_single_packet(packet: RadioPacket) -> RadioMessage {
+    pub fn from_single_packet(packet: RadioPacket) -> RadioMessage {
         let message_type = packet.message_type();
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
             // Handle AddBlock and AddTransaction messages
             let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
-            payload[0..13].copy_from_slice(&packet.data[0..13]);
-            // Skip the 2 packet meta bytes at positions 13 and 14 in the packet
-            payload[13..13 + (packet.length - 15)].copy_from_slice(&packet.data[15..packet.length]);
+            payload[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE].copy_from_slice(&packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
+            // Skip the 2 per-packet meta bytes (total count, index) right after RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+            payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + (packet.length - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE)]
+                .copy_from_slice(&packet.data[RADIO_MULTI_PACKET_PACKET_HEADER_SIZE..packet.length]);
 
             RadioMessage {
                 payload,
-                // 13 bytes header + actual payload (packet.length - 15)
-                length: 13 + (packet.length - 15),
+                // RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + actual payload (skipping per-packet header)
+                length: RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + (packet.length - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE),
+                packets_to_send: None,
             }
         } else {
             let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
@@ -127,32 +172,37 @@ impl RadioMessage {
             RadioMessage {
                 payload,
                 length: packet.length,
+                packets_to_send: None,
             }
         }
     }
 
-    pub(crate) fn new_empty_message() -> Self {
+    pub(crate) fn new() -> Self {
         // Create a new empty RadioMessage with default values
         RadioMessage {
             payload: [0u8; RADIO_MAX_MESSAGE_SIZE],
             length: 0,
+            packets_to_send: None,
         }
     }
 
     pub(crate) fn add_packet(&mut self, packet: &RadioPacket) {
         let total_packet_count = packet.total_packet_count();
         if total_packet_count == packet.packet_index() + 1 {
-            self.payload[0..13].copy_from_slice(&packet.data[0..13]);
-            self.length = 13 + (RADIO_PACKET_SIZE - 15) * (total_packet_count as usize - 1) + packet.length - 15;
+            self.payload[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE].copy_from_slice(&packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
+            self.length = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+                + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) * (total_packet_count as usize - 1)
+                + packet.length
+                - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
         }
 
-        let start_index = 13 + (RADIO_PACKET_SIZE - 15) * packet.packet_index() as usize;
+        let start_index = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) * packet.packet_index() as usize;
         let end_index = match packet.packet_index() == packet.total_packet_count() - 1 {
-            true => start_index + packet.length - 15,
-            false => start_index + (RADIO_PACKET_SIZE - 15),
+            true => start_index + packet.length - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE,
+            false => start_index + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE),
         };
 
-        self.payload[start_index..end_index].copy_from_slice(&packet.data[15..packet.length]);
+        self.payload[start_index..end_index].copy_from_slice(&packet.data[RADIO_MULTI_PACKET_PACKET_HEADER_SIZE..packet.length]);
     }
 
     pub fn new_request_echo(node_id: u32) -> Self {
@@ -161,7 +211,11 @@ impl RadioMessage {
         payload[0] = MessageType::RequestEcho as u8;
         let node_id_bytes = node_id.to_le_bytes();
         payload[1..node_id_bytes.len() + 1].copy_from_slice(&node_id_bytes);
-        RadioMessage { payload, length: 5 }
+        RadioMessage {
+            payload,
+            length: 5,
+            packets_to_send: None,
+        }
     }
 
     pub fn new_echo(node_id: u32, target_node_id: u32, link_quality: u8) -> Self {
@@ -174,7 +228,11 @@ impl RadioMessage {
         payload[5..5 + target_node_id_bytes.len()].copy_from_slice(&target_node_id_bytes);
         payload[5 + target_node_id_bytes.len()] = link_quality;
 
-        RadioMessage { payload, length: 10 }
+        RadioMessage {
+            payload,
+            length: 10,
+            packets_to_send: None,
+        }
     }
 
     pub fn new_request_full_block(node_id: u32, sequence: u32) -> Self {
@@ -186,7 +244,11 @@ impl RadioMessage {
         let sequence_bytes = sequence.to_le_bytes();
         payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
 
-        RadioMessage { payload, length: 9 }
+        RadioMessage {
+            payload,
+            length: 9,
+            packets_to_send: None,
+        }
     }
 
     pub fn new_echo_result(node_id: u32) -> Self {
@@ -196,11 +258,15 @@ impl RadioMessage {
         let node_id_bytes = node_id.to_le_bytes();
         payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
 
-        RadioMessage { payload, length: 5 }
+        RadioMessage {
+            payload,
+            length: 5,
+            packets_to_send: None,
+        }
     }
 
     pub(crate) fn add_echo_result_item(&mut self, neighbor_node: u32, send_link_quality: u8, receive_link_quality: u8) -> Result<(), ()> {
-        // Add an echo result item to the message payload
+        // Add an echo result item to the message payload (each item is 6 bytes)
         if self.length + 6 > RADIO_PACKET_SIZE {
             //the message must fit into a single packet
             return Err(());
@@ -218,12 +284,7 @@ impl RadioMessage {
         Ok(())
     }
 
-    pub(crate) fn get_echo_result_item_count(&self) -> usize {
-        // Get the number of echo result items in the message
-        (self.length - 1) / 6
-    }
-
-    pub fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32) -> Self {
+    pub(crate) fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32) -> Self {
         // Create a new RadioMessage with a specific message type for block part requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::RequestBlockPart as u8;
@@ -235,10 +296,14 @@ impl RadioMessage {
         payload[9..9 + checksum_bytes.len()].copy_from_slice(&checksum_bytes);
         payload[13] = 0; //current index count set to 0
 
-        RadioMessage { payload, length: 14 }
+        RadioMessage {
+            payload,
+            length: 14,
+            packets_to_send: None,
+        }
     }
 
-    pub fn add_packet_index_to_request_block_part(&mut self, packet_index: u8) -> Result<(), ()> {
+    pub(crate) fn add_packet_index_to_request_block_part(&mut self, packet_index: u8) -> Result<(), ()> {
         // Add a packet index to the request block part message
         if self.message_type() != MessageType::RequestBlockPart as u8 {
             return Err(());
@@ -251,11 +316,13 @@ impl RadioMessage {
         self.payload[self.payload[13] as usize + 14] = packet_index;
 
         self.payload[13] += 1;
+        self.length += 1;
+
         Ok(())
     }
 
     pub fn new_add_block(node_id: u32, sequence: u32, payload: &[u8]) -> Self {
-        //calculate payload checksum
+        // Calculate payload checksum
         let payload_checksum = crc32c(payload);
 
         // Create a new RadioMessage with a specific message type for adding blocks
@@ -268,13 +335,27 @@ impl RadioMessage {
         let checksum_bytes = payload_checksum.to_le_bytes();
         full_payload[9..9 + checksum_bytes.len()].copy_from_slice(&checksum_bytes);
 
-        // Copy the actual payload data into the message
-        full_payload[13..13 + payload.len()].copy_from_slice(payload);
+        // Copy the actual payload data into the message after RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+        full_payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + payload.len()].copy_from_slice(payload);
 
         RadioMessage {
             payload: full_payload,
-            length: 13 + payload.len(),
+            length: RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + payload.len(),
+            packets_to_send: None,
         }
+    }
+
+    pub fn new_add_block_with_packet_list(node_id: u32, sequence: u32, payload: &[u8], packets_to_send: [bool; RADIO_MAX_PACKET_COUNT]) -> Self {
+        let mut new_message = Self::new_add_block(node_id, sequence, payload);
+        new_message.packets_to_send = Some(packets_to_send);
+        new_message
+    }
+
+    pub fn add_packet_list(&mut self, packets_to_send: [bool; RADIO_MAX_PACKET_COUNT]) {
+        if self.message_type() != MessageType::AddBlock as u8 && self.message_type() != MessageType::AddTransaction as u8 {
+            return; // Only AddBlock and AddTransaction messages can have packet lists
+        }
+        self.packets_to_send = Some(packets_to_send);
     }
 
     pub fn new_add_transaction(node_id: u32, anchor_sequence: u32, payload_checksum: u32, payload: &[u8]) -> Self {
@@ -288,12 +369,13 @@ impl RadioMessage {
         let checksum_bytes = payload_checksum.to_le_bytes();
         full_payload[9..9 + checksum_bytes.len()].copy_from_slice(&checksum_bytes);
 
-        // Copy the actual payload data into the message
-        full_payload[13..13 + payload.len()].copy_from_slice(payload);
+        // Copy the actual payload data into the message after RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+        full_payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + payload.len()].copy_from_slice(payload);
 
         RadioMessage {
             payload: full_payload,
-            length: 13 + payload.len(),
+            length: RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + payload.len(),
+            packets_to_send: None,
         }
     }
 
@@ -304,11 +386,15 @@ impl RadioMessage {
         let node_id_bytes = node_id.to_le_bytes();
         payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
 
-        RadioMessage { payload, length: 5 }
+        RadioMessage {
+            payload,
+            length: 5,
+            packets_to_send: None,
+        }
     }
 
     pub fn add_mempool_item(&mut self, anchor_sequence: u32, payload_checksum: u32) -> Result<(), ()> {
-        // Add a mempool item to the message payload
+        // Add a mempool item to the message payload (8 bytes per item)
         if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
             return Err(());
         }
@@ -337,11 +423,12 @@ impl RadioMessage {
         full_payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
         let supporter_node_bytes = supporter_node.to_le_bytes();
         full_payload[9..9 + supporter_node_bytes.len()].copy_from_slice(&supporter_node_bytes);
-        full_payload[13..13 + signature.len()].copy_from_slice(signature);
+        full_payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + signature.len()].copy_from_slice(signature);
 
         RadioMessage {
             payload: full_payload,
-            length: 13 + signature.len(),
+            length: RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + signature.len(),
+            packets_to_send: None,
         }
     }
 
@@ -352,38 +439,88 @@ impl RadioMessage {
         self.payload[0]
     }
 
-    pub(crate) fn get_packet_count(&self) -> usize {
+    fn get_total_packet_count(&self) -> usize {
         if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
-            let payload_length = self.length - 13; // Exclude header
-            return (payload_length + RADIO_PACKET_SIZE - 16) / (RADIO_PACKET_SIZE - 15);
+            let payload_length = self.length.saturating_sub(RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE); // Exclude header
+            if payload_length == 0 {
+                return 0;
+            }
+            let packet_count = core::cmp::min(
+                (payload_length + RADIO_PACKET_SIZE - (RADIO_MULTI_PACKET_PACKET_HEADER_SIZE + 1))
+                    / (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE),
+                RADIO_MAX_PACKET_COUNT,
+            );
+            return packet_count;
         } else {
             return 1;
         }
     }
 
-    pub(crate) fn get_packet(&self, packet_number: usize) -> Option<RadioPacket> {
+    pub(crate) fn get_packet_count(&self) -> usize {
+        let mut packet_count = self.get_total_packet_count();
         if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
-            let total_packets = self.get_packet_count();
-            if packet_number >= total_packets {
+            if let Some(packets_to_send) = self.packets_to_send {
+                let unfiltered_packet_count = packet_count;
+
+                for i in 0..unfiltered_packet_count {
+                    if !packets_to_send[i] {
+                        packet_count -= 1;
+                    }
+                }
+            }
+        }
+        return packet_count;
+    }
+
+    pub(crate) fn get_packet(&self, input_packet_number: usize) -> Option<RadioPacket> {
+        if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
+            let total_packets = self.get_total_packet_count();
+            if input_packet_number >= total_packets {
                 return None;
             }
 
-            let start_index = 13 + packet_number * (RADIO_PACKET_SIZE - 15);
-            let end_index = start_index + (RADIO_PACKET_SIZE - 15);
+            let mut packet_number = input_packet_number;
+
+            if let Some(packets_to_send) = self.packets_to_send {
+                let mut actual_packet_number = 0;
+                let mut found_packets = 0;
+
+                for i in 0..total_packets {
+                    if packets_to_send[i] {
+                        if found_packets == packet_number {
+                            actual_packet_number = i;
+                            found_packets += 1;
+                            break;
+                        }
+                        found_packets += 1;
+                    }
+                }
+                if found_packets <= input_packet_number {
+                    return None; // Not enough packets to satisfy the request
+                }
+                packet_number = actual_packet_number;
+            }
+
+            let start_index = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + packet_number * (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE);
+            let end_index = start_index + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE);
             let packet_data = &self.payload[start_index..end_index.min(self.length)];
-            let packet_header = &self.payload[0..13]; // First 13 bytes are the header
+            let packet_header = &self.payload[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]; // First RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes are the multi-packet message header
 
             let mut data = [0u8; RADIO_PACKET_SIZE];
-            data[..13].copy_from_slice(packet_header);
-            data[13] = total_packets as u8; // Total packet count in the header
-            data[14] = packet_number as u8; // Packet number in the header
-            data[15..packet_data.len() + 15].copy_from_slice(packet_data);
+            data[..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE].copy_from_slice(packet_header);
+            // We use the real (unfiltered) total count and packet index here because the receiver needs to reconstruct the full message
+            data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] = total_packets as u8; // total count
+            data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1] = packet_number as u8; // packet index
+            data[RADIO_MULTI_PACKET_PACKET_HEADER_SIZE..packet_data.len() + RADIO_MULTI_PACKET_PACKET_HEADER_SIZE].copy_from_slice(packet_data);
 
             Some(RadioPacket {
                 data,
-                length: packet_data.len() + 15,
+                length: packet_data.len() + RADIO_MULTI_PACKET_PACKET_HEADER_SIZE,
             })
         } else {
+            if input_packet_number != 0 {
+                return None; // Only one packet available for non multi-packet messages
+            }
             let mut data = [0u8; RADIO_PACKET_SIZE];
             data[..self.length].copy_from_slice(&self.payload[0..self.length]);
             Some(RadioPacket { data, length: self.length })
@@ -472,6 +609,7 @@ impl RadioMessage {
         if self.message_type() != MessageType::AddBlock as u8
             && self.message_type() != MessageType::RequestFullBlock as u8
             && self.message_type() != MessageType::Support as u8
+            && self.message_type() != MessageType::RequestBlockPart as u8
         {
             return None; // Only AddBlock and AddTransaction messages have a sequence
         }
@@ -549,6 +687,37 @@ impl RadioMessage {
         }
 
         Some(MempoolIterator::new(&self.payload, 5, self.length))
+    }
+
+    pub(crate) fn payload_checksum(&self) -> Option<u32> {
+        if self.message_type() != MessageType::AddBlock as u8 && self.message_type() != MessageType::AddTransaction as u8 {
+            return None; // Only AddBlock and AddTransaction messages have a payload checksum
+        }
+        if self.length < 13 {
+            return None; // Not enough data for checksum
+        }
+
+        let mut checksum_bytes = [0u8; 4];
+        checksum_bytes.copy_from_slice(&self.payload[9..13]);
+        Some(u32::from_le_bytes(checksum_bytes))
+    }
+
+    /// Get an iterator over RequestBlockPart packet indices.
+    /// Layout: [0]=type, [1..5)=sender, [5..9)=sequence, [9..13)=checksum, [13]=count, [14..14+count)=indices
+    pub fn get_request_block_part_iterator(&self) -> Option<RequestBlockPartIterator> {
+        if self.message_type() != MessageType::RequestBlockPart as u8 {
+            return None;
+        }
+        // need at least up to count byte present
+        if self.length < 14 {
+            return None;
+        }
+        let count = self.payload[13] as usize;
+        // Start of indices immediately after count byte
+        let start = 14usize;
+        // Use count as authoritative; cap to a single radio packet size for safety
+        let end = (start + count).min(RADIO_PACKET_SIZE);
+        Some(RequestBlockPartIterator::new(&self.payload, start, end))
     }
 }
 
@@ -821,22 +990,58 @@ impl RadioPacket {
     pub fn total_packet_count(&self) -> u8 {
         let message_type = self.message_type();
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
-            if self.length < 15 {
+            if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet count
             }
-            return self.data[13];
+            return self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
         } else {
             return 1; // For other message types, always 1 packet
         }
     }
 
+    pub fn sequence(&self) -> Option<u32> {
+        if self.message_type() != MessageType::AddBlock as u8
+            && self.message_type() != MessageType::RequestFullBlock as u8
+            && self.message_type() != MessageType::Support as u8
+            && self.message_type() != MessageType::RequestBlockPart as u8
+        {
+            return None; // Only AddBlock and AddTransaction messages have a sequence
+        }
+
+        // Extract the sequence number from the message payload
+        if self.length < 9 {
+            return None; // Not enough data for sequence
+        }
+        let mut sequence_bytes = [0u8; 4];
+        sequence_bytes.copy_from_slice(&self.data[5..9]);
+        Some(u32::from_le_bytes(sequence_bytes))
+    }
+
+    pub(crate) fn payload_checksum(&self) -> Option<u32> {
+        if self.message_type() != MessageType::AddBlock as u8
+            && self.message_type() != MessageType::RequestFullBlock as u8
+            && self.message_type() != MessageType::Support as u8
+            && self.message_type() != MessageType::RequestBlockPart as u8
+        {
+            return None; // Only AddBlock and AddTransaction messages have a sequence
+        }
+
+        // Extract the payload checksum from the message payload
+        if self.length < 13 {
+            return None; // Not enough data for payload checksum
+        }
+        let mut checksum_bytes = [0u8; 4];
+        checksum_bytes.copy_from_slice(&self.data[9..13]);
+        Some(u32::from_le_bytes(checksum_bytes))
+    }
+
     pub fn packet_index(&self) -> u8 {
         let message_type = self.message_type();
         if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
-            if self.length < 15 {
+            if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet index
             }
-            return self.data[14];
+            return self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1];
         } else {
             return 0; // For other message types, always 0
         }
@@ -848,11 +1053,11 @@ impl RadioPacket {
         }
 
         if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
-            if self.length < 13 || other_header.len() < 13 {
+            if self.length < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE || other_header.len() < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE {
                 return false;
             }
 
-            if self.data[5..13] == other_header[5..13] {
+            if self.data[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] == other_header[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] {
                 return true;
             } else {
                 return false;
@@ -974,7 +1179,7 @@ mod tests {
     fn add_block_fragmentation_and_reassembly() {
         let seq = 0x0102_0304;
         // Payload length spanning multiple packets
-        let part = RADIO_PACKET_SIZE - 15; // bytes per packet chunk
+        let part = RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE; // bytes per packet chunk
         let total_len = part * 3 + 10; // 3 full + 1 partial
         let mut payload_vec = vec![0u8; total_len];
         // Make payload deterministic
@@ -987,7 +1192,7 @@ mod tests {
         let count = msg.get_packet_count();
         assert_eq!(count, 4);
 
-        let mut reassembled = RadioMessage::new_empty_message();
+        let mut reassembled = RadioMessage::new();
         for idx in 0..count {
             let p = msg.get_packet(idx).expect("packet must exist");
             // Validate per-packet header/meta
@@ -1001,10 +1206,13 @@ mod tests {
         // Reassembled message should match type/sequence/checksum and byte length
         assert_eq!(reassembled.message_type(), MessageType::AddBlock as u8);
         assert_eq!(reassembled.sequence().unwrap(), seq);
-        assert_eq!(reassembled.length(), 13 + total_len);
+        assert_eq!(reassembled.length(), RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + total_len);
 
         // Verify payload bytes match exactly
-        assert_eq!(&reassembled.payload[13..13 + total_len], &payload_vec[..]);
+        assert_eq!(
+            &reassembled.payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + total_len],
+            &payload_vec[..]
+        );
 
         // Out-of-range packet request returns None
         assert!(msg.get_packet(count).is_none());
@@ -1015,7 +1223,7 @@ mod tests {
         let m = RadioMessage::new_request_full_block(21, 0xDEAD_BEEF);
         let p = m.get_packet(0).unwrap();
         // Single packet reconstruction should be equal
-        let m2 = RadioMessage::new_from_single_packet(p);
+        let m2 = RadioMessage::from_single_packet(p);
         assert_eq!(m2, m);
     }
 
@@ -1034,5 +1242,98 @@ mod tests {
         c.add_packet_index_to_request_block_part(10).unwrap();
         c.add_packet_index_to_request_block_part(11).unwrap(); // count = 2
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn non_chunked_out_of_range_packet_request() {
+        let m = RadioMessage::new_request_echo(123);
+        // Only index 0 is valid for non-chunked messages
+        assert!(m.get_packet(0).is_some());
+        assert!(m.get_packet(1).is_none());
+    }
+
+    #[test]
+    fn chunk_boundary_counts_and_indices() {
+        let chunk = RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
+        // Test several boundary sizes up to the maximum
+        for n in 1..=core::cmp::min(4, RADIO_MAX_PACKET_COUNT) {
+            let total_len = chunk * n; // exact multiple of chunk
+            let payload: Vec<u8> = (0..total_len).map(|i| (i % 251) as u8).collect();
+            let msg = RadioMessage::new_add_block(77, 0x01020304, &payload);
+
+            assert_eq!(msg.get_packet_count(), n, "packet count should equal chunks for n={}", n);
+
+            for idx in 0..n {
+                let p = msg.get_packet(idx).expect("packet must exist");
+                assert_eq!(p.total_packet_count() as usize, n);
+                assert_eq!(p.packet_index() as usize, idx);
+            }
+
+            // Out of range
+            assert!(msg.get_packet(n).is_none());
+        }
+    }
+
+    #[test]
+    fn mask_filtering_and_index_mapping() {
+        let chunk = RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
+        let n = 5; // total unfiltered packets
+        let payload: Vec<u8> = (0..(chunk * n)).map(|i| (i % 251) as u8).collect();
+
+        let mut mask = [false; RADIO_MAX_PACKET_COUNT];
+        mask[1] = true;
+        mask[2] = true;
+        mask[4] = true;
+
+        let msg = RadioMessage::new_add_block_with_packet_list(9, 0xAA55AA55, &payload, mask);
+        assert_eq!(msg.get_packet_count(), 3);
+
+        // Filtered index 0 -> actual 1
+        let p0 = msg.get_packet(0).expect("filtered packet 0 exists");
+        assert_eq!(p0.total_packet_count(), n as u8);
+        assert_eq!(p0.packet_index(), 1);
+
+        // Filtered index 1 -> actual 2
+        let p1 = msg.get_packet(1).expect("filtered packet 1 exists");
+        assert_eq!(p1.packet_index(), 2);
+
+        // Filtered index 2 -> actual 4
+        let p2 = msg.get_packet(2).expect("filtered packet 2 exists");
+        assert_eq!(p2.packet_index(), 4);
+
+        // Filtered index 3 -> None
+        assert!(msg.get_packet(3).is_none());
+    }
+
+    #[test]
+    fn zero_length_chunked_payload_behaviour() {
+        let msg = RadioMessage::new_add_block(5, 0x01020304, &[]);
+        // Zero-length payload currently yields 0 packets
+        assert_eq!(msg.get_packet_count(), 0);
+        assert!(msg.get_packet(0).is_none());
+    }
+
+    #[test]
+    fn request_block_part_iterator_zero_and_some() {
+        // zero indices
+        let m0 = RadioMessage::new_request_block_part(1, 0xAABBCCDD, 0x11223344);
+        assert_eq!(m0.message_type(), MessageType::RequestBlockPart as u8);
+        // count byte is 0, iterator should be empty
+        let v0: Vec<u8> = m0.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        assert!(v0.is_empty());
+
+        // one index
+        let mut m1 = RadioMessage::new_request_block_part(2, 0xCAFEBABE, 0x55667788);
+        m1.add_packet_index_to_request_block_part(9).unwrap();
+        let v1: Vec<u8> = m1.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        assert_eq!(v1, vec![9]);
+
+        // multiple indices in order
+        let mut mm = RadioMessage::new_request_block_part(3, 0x01020304, 0x99AA_BBCC);
+        for i in [1u8, 3, 4, 7, 9] {
+            mm.add_packet_index_to_request_block_part(i).unwrap();
+        }
+        let v: Vec<u8> = mm.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        assert_eq!(v, vec![1, 3, 4, 7, 9]);
     }
 }

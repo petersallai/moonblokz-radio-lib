@@ -1,5 +1,3 @@
-use core::char::MAX;
-
 use crate::MAX_NODE_COUNT;
 use crate::RxPacketQueueSender;
 use crate::TxPacketQueueReceiver;

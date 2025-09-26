@@ -57,16 +57,23 @@ use rand_wyrand::WyRand;
 pub use radio_message::MessageType;
 pub use radio_message::{EchoResultItem, EchoResultIterator, RadioMessage, RadioPacket};
 
+//
+const RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE: usize = 13; // bytes
+const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15; // bytes
+
 //Hardware dependent constants, that affect compatibility of a node
-const RADIO_PACKET_SIZE: usize = 215;
-const RADIO_MAX_MESSAGE_SIZE: usize = 2015;
-const RADIO_MAX_PACKET_COUNT: usize = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE; // Ceiling division
+pub const RADIO_PACKET_SIZE: usize = 215;
+pub const RADIO_MAX_MESSAGE_SIZE: usize = 2013; // Should be multiple of (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) + RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+pub const RADIO_MAX_PACKET_COUNT: usize = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE; // Ceiling division
+
+const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");
 
 //Hardware dependent constants, that only affect efficiency of a node, but does not result incompatibility
 const CONNECTION_MATRIX_SIZE: usize = 100;
 const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 const WAIT_POOL_SIZE: usize = 10;
 const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 10;
+const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 10;
 
 #[cfg(feature = "radio-device-simulator")]
 pub const MAX_NODE_COUNT: usize = 1000;
@@ -108,9 +115,9 @@ type OutgoingMessageQueueSender = embassy_sync::channel::Sender<'static, Critica
 static OUTGOING_MESSAGE_QUEUE: OutgoingMessageQueue = Channel::new();
 
 const INCOMING_MESSAGE_QUEUE_SIZE: usize = 10;
-type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
-type IncomingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
-type IncomingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
 
 #[cfg(feature = "embedded")]
 static INCOMING_MESSAGE_QUEUE: IncomingMessageQueue = Channel::new();
@@ -232,13 +239,19 @@ enum RxState {
 /// ```
 
 pub enum MessageProcessingResult {
-    RequestedBlockNotFound(u32),                    //this node not has the block with the give sequence
-    RequestedBlockFound(RadioMessage),              // this node has the requested block
-    RequestedBlockPartFound(RadioMessage, u32, u8), // this node has the requested block part (RadioMessage, payload checksum, part_index)
-    NewBlockAdded(RadioMessage),                    // a new block has been added to the node
-    NewTransactionAdded(RadioMessage),              // a new transaction has been added to the node
-    SendReplyTransaction(RadioMessage),             // a reply transaction has been sent
-    NewSupportAdded(RadioMessage),                  // a new support has been added to the node
+    RequestedBlockNotFound(u32),                 //this node not has the block with the give sequence
+    RequestedBlockFound(RadioMessage),           // this node has the requested block
+    RequestedBlockPartsFound(RadioMessage, u32), // this node has the requested block part (RadioMessage, requestor node)
+    NewBlockAdded(RadioMessage),                 // a new block has been added to the node
+    NewTransactionAdded(RadioMessage),           // a new transaction has been added to the node
+    SendReplyTransaction(RadioMessage),          // a reply transaction has been sent
+    NewSupportAdded(RadioMessage),               // a new support has been added to the node
+    AlreadyHaveMessage(u8, u32, u32),            //message type,sequence,payload
+}
+
+pub enum IncomingMessageItem {
+    CheckIfAlreadyHaveMessage(u8, u32, u32), //message type,sequence,payload checksum
+    NewMessage(RadioMessage),
 }
 
 pub struct ReceivedPacket {
@@ -429,7 +442,7 @@ impl RadioCommunicationManager {
         Ok(())
     }
 
-    pub async fn receive_message(&self) -> Result<RadioMessage, ReceiveMessageError> {
+    pub async fn receive_message(&self) -> Result<IncomingMessageItem, ReceiveMessageError> {
         let incoming_message_queue_receiver = match &self.state {
             RadioCommunicationManagerState::Uninitialized => {
                 return Err(ReceiveMessageError::NotInited);
@@ -442,7 +455,7 @@ impl RadioCommunicationManager {
         return Ok(incoming_message_queue_receiver.receive().await);
     }
 
-    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult, _success: bool) {
+    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult) {
         let process_result_queue_sender = match &self.state {
             RadioCommunicationManagerState::Uninitialized => {
                 return;

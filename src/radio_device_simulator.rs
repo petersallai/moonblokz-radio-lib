@@ -62,7 +62,6 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
                     RadioInputMessage::CADResponse(busy) => {
                         next_cad = true;
                         if busy {
-                            log!(Level::Info, "CAD detected channel busy, waiting before retrying");
                             Timer::after(embassy_time::Duration::from_millis(
                                 CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
                             ))
