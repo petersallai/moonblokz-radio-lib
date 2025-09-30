@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Destination mount point for the RP2040 UF2 copy. Override by exporting DEST or
+# passing DEST in the environment when invoking this script. Defaults to the
+# standard RP2040 boot volume on macOS.
+DEST="${DEST:-/Volumes/RPI-RP2}"
+
 echo "[1/3] Building (release)..."
 cargo build --release --target thumbv6m-none-eabi
 echo "Build succeeded."

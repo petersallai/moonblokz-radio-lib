@@ -5,7 +5,7 @@
 #![no_main]
 
 mod panic;
-mod usb_serial;
+use rp_usb_console;
 
 use embassy_executor::Spawner;
 use embassy_rp::flash::{Blocking, Flash};
@@ -45,7 +45,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     //let _driver = Driver::new(p.USB, Irqs);
     //  spawner.spawn(logger_task(driver)).unwrap();
-    usb_serial::start(spawner, log::LevelFilter::Trace, p.USB, COMMAND_CHANNEL.sender());
+    rp_usb_console::start(spawner, log::LevelFilter::Trace, p.USB, COMMAND_CHANNEL.sender());
     spawner.spawn(command_task(COMMAND_CHANNEL.receiver())).unwrap();
 
     //waiting a bit to let the terminal connect to the device

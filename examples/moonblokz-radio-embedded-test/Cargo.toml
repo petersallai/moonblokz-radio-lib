@@ -31,6 +31,7 @@ lora-phy = { git = "https://github.com/lora-rs/lora-rs.git", default-features = 
 
 log = "0.4"
 
+rp-usb-console = { git = "https://github.com/petersallai/rp-usb-console"}
 moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-lora-sx1262"] }
 
 
