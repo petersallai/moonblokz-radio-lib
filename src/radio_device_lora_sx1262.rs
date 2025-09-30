@@ -41,7 +41,9 @@ use crate::TxPacketQueueReceiver;
 use crate::calculate_link_quality;
 
 use embassy_futures::select::{Either, select};
+use embassy_rp::Peri;
 use embassy_rp::gpio::AnyPin;
+use embassy_rp::gpio::Pin;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::spi::{Config, Spi};
 use embassy_time::Delay;
@@ -55,14 +57,13 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
-const CAD_MINIMAL_WAIT_TIME: u64 = 1000; // Minimum wait time in milliseconds after CAD command
-const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 1000; // Maximum additional wait time in milliseconds after CAD command
+const CAD_MINIMAL_WAIT_TIME: u64 = 300; // Minimum wait time in milliseconds after CAD command
+const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200; // Maximum additional wait time in milliseconds after CAD command
 
 /// Radio device initialization errors
 ///
 /// Represents specific errors that can occur during radio device initialization.
 /// These provide more granular error information than the generic `InitializationFailed`.
-#[derive(Debug)]
 pub enum RadioDeviceInitError {
     /// Failed to create the SX126x interface variant
     InterfaceError,
@@ -76,7 +77,6 @@ pub enum RadioDeviceInitError {
     RXPacketParamsError,
 }
 
-#[derive(Debug)]
 enum RadioDeviceError {
     InitializationFailed,
     TransmissionFailed,
@@ -193,18 +193,21 @@ impl RadioDevice {
     /// ```
     pub async fn initialize(
         &mut self,
-        spi_nss_pin: AnyPin,
-        reset_pin: AnyPin,
-        dio1_pin: AnyPin,
-        busy_pin: AnyPin,
-        transmit_pin_option: Option<AnyPin>,
-        spi: embassy_rp::peripherals::SPI1,
-        clk_pin: impl embassy_rp::spi::ClkPin<embassy_rp::peripherals::SPI1>,
-        mosi_pin: impl embassy_rp::spi::MosiPin<embassy_rp::peripherals::SPI1>,
-        miso_pin: impl embassy_rp::spi::MisoPin<embassy_rp::peripherals::SPI1>,
-        tx_dma: embassy_rp::dma::AnyChannel,
-        rx_dma: embassy_rp::dma::AnyChannel,
+        spi_nss_pin: Peri<'static, AnyPin>,
+        reset_pin: Peri<'static, AnyPin>,
+        dio1_pin: Peri<'static, AnyPin>,
+        busy_pin: Peri<'static, AnyPin>,
+        transmit_pin_option: Option<Peri<'static, AnyPin>>,
+        spi: Peri<'static, embassy_rp::peripherals::SPI1>,
+        clk_pin: Peri<'static, impl embassy_rp::spi::ClkPin<embassy_rp::peripherals::SPI1>>,
+        mosi_pin: Peri<'static, impl embassy_rp::spi::MosiPin<embassy_rp::peripherals::SPI1>>,
+        miso_pin: Peri<'static, impl embassy_rp::spi::MisoPin<embassy_rp::peripherals::SPI1>>,
+        tx_dma: Peri<'static, embassy_rp::dma::AnyChannel>,
+        rx_dma: Peri<'static, embassy_rp::dma::AnyChannel>,
         lora_frequency_in_hz: u32,
+        spreading_factor: SpreadingFactor,
+        bandwidth: Bandwidth,
+        coding_rate: CodingRate,
     ) -> Result<(), RadioDeviceInitError> {
         let spi_nss = Output::new(spi_nss_pin, Level::High);
         let reset = Output::new(reset_pin, Level::High);
@@ -217,7 +220,12 @@ impl RadioDevice {
         };
 
         let spi = Spi::new(spi, clk_pin, mosi_pin, miso_pin, tx_dma, rx_dma, Config::default());
-        let spi_device = ExclusiveDevice::new(spi, spi_nss, Delay);
+        let spi_device = match ExclusiveDevice::new(spi, spi_nss, Delay) {
+            Ok(device) => device,
+            Err(_err) => {
+                return Err(RadioDeviceInitError::InterfaceError);
+            }
+        };
 
         let config = sx126x::Config {
             chip: Sx1262,
@@ -240,7 +248,7 @@ impl RadioDevice {
         };
 
         let mdltn_params = {
-            match lora.create_modulation_params(SpreadingFactor::_10, Bandwidth::_250KHz, CodingRate::_4_8, lora_frequency_in_hz) {
+            match lora.create_modulation_params(spreading_factor, bandwidth, coding_rate, lora_frequency_in_hz) {
                 Ok(mp) => mp,
                 Err(_err) => {
                     return Err(RadioDeviceInitError::ModulationParamsError);
@@ -283,23 +291,33 @@ impl RadioDevice {
             match select(self.receive_message(), tx_receiver.receive()).await {
                 Either::First(rx_result) => match rx_result {
                     Ok(packet) => {
-                        let _ = rx_sender.try_send(packet);
+                        log::trace!(
+                            "Received packet. Type: {}, from: {}",
+                            packet.packet.message_type(),
+                            packet.packet.sender_node_id()
+                        );
+                        if rx_sender.try_send(packet).is_err() {
+                            log::warn!("RX queue full, dropping received packet.");
+                        }
                     }
                     Err(_e) => {
-                        //receive error happened, but we don't log it to converse binary size.
+                        log::warn!("Receive error from radio device");
                     }
                 },
                 Either::Second(tx_packet) => {
+                    log::trace!("Received TX packet for transmit. Type: {}", tx_packet.message_type());
                     // Transmit the packet once: wait for a clear channel, then send and break
                     loop {
                         match self.do_cad().await {
                             Ok(false) => {
                                 // Channel is clear; attempt a single send then exit loop
+                                log::trace!("Channel clear, transmitting packet");
                                 let _ = self.send_message(&tx_packet).await;
                                 break;
                             }
                             Ok(true) | Err(_) => {
                                 // Channel busy or CAD error: wait then retry CAD
+                                log::trace!("Channel busy or CAD error, waiting before retry");
                                 Timer::after(embassy_time::Duration::from_millis(
                                     CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
                                 ))
