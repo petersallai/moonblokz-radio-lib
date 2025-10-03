@@ -188,7 +188,7 @@ impl RadioMessage {
 
     pub(crate) fn add_packet(&mut self, packet: &RadioPacket) {
         let total_packet_count = packet.total_packet_count();
-        if total_packet_count == packet.packet_index() + 1 {
+        if total_packet_count == (packet.packet_index() + 1) {
             self.payload[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE].copy_from_slice(&packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
             self.length = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
                 + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) * (total_packet_count as usize - 1)
@@ -718,6 +718,15 @@ impl RadioMessage {
         // Use count as authoritative; cap to a single radio packet size for safety
         let end = (start + count).min(RADIO_PACKET_SIZE);
         Some(RequestBlockPartIterator::new(&self.payload, start, end))
+    }
+
+    pub(crate) fn check_payload_checksum(&self) -> bool {
+        if let Some(expected_checksum) = self.payload_checksum() {
+            let actual_payload = &self.payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE..self.length];
+            let actual_checksum = crc32c(actual_payload);
+            return expected_checksum == actual_checksum;
+        }
+        false
     }
 }
 

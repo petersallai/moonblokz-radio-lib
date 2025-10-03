@@ -168,6 +168,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         // Process wait pool items
         if let Some(mut message) = self.wait_pool.get_next_activated_message() {
             message.set_sender_node_id(self.own_node_id);
+            if let Some(sequence) = message.sequence() {
+                log::debug!("Sending relayed message: sequence: {}", sequence);
+            }
             return RelayResult::SendMessage(message);
         }
 

@@ -54,7 +54,7 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 // Re-export types from radio_message module
-pub use radio_message::MessageType;
+pub use crate::radio_message::MessageType;
 pub use radio_message::{EchoResultItem, EchoResultIterator, RadioMessage, RadioPacket};
 
 //

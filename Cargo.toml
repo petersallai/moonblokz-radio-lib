@@ -22,11 +22,12 @@ rand-wyrand = {version="0.3.0", default-features = false}
 critical-section = { version = "1.2.0", features = ["std"],optional = true}
 
 [features]
+soft-packet-crc = []
 default = ["radio-device-lora-sx1262"]
 std=["embassy-executor/arch-std","embassy-executor/executor-thread","embassy-time/std","embassy-sync/std","critical-section/std"]
 embedded=["embassy-executor/executor-thread","embassy-executor/arch-cortex-m","embassy-executor/executor-interrupt","dep:embassy-rp","dep:embedded-hal-bus","dep:lora-phy"]
 radio-device-echo = ["std"]
-radio-device-lora-sx1262 = ["embedded"]
+radio-device-lora-sx1262 = ["embedded","soft-packet-crc"]
 radio-device-simulator = ["std"]
 
 [dev-dependencies]

@@ -1,3 +1,5 @@
+use crate::MessageType;
+use crate::RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
 /// LoRa SX1262 Radio Device Implementation
 ///
 /// This module provides a complete radio device implementation for the SX1262 LoRa transceiver,
@@ -43,7 +45,6 @@ use crate::calculate_link_quality;
 use embassy_futures::select::{Either, select};
 use embassy_rp::Peri;
 use embassy_rp::gpio::AnyPin;
-use embassy_rp::gpio::Pin;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::spi::{Config, Spi};
 use embassy_time::Delay;
@@ -51,6 +52,7 @@ use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use lora_phy::LoRa;
 use lora_phy::iv::GenericSx126xInterfaceVariant;
+use lora_phy::sx126x::TcxoCtrlVoltage;
 use lora_phy::sx126x::{Sx126x, Sx1262};
 use lora_phy::{mod_params::*, sx126x};
 use rand_core::RngCore;
@@ -59,6 +61,7 @@ use rand_wyrand::WyRand;
 
 const CAD_MINIMAL_WAIT_TIME: u64 = 300; // Minimum wait time in milliseconds after CAD command
 const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200; // Maximum additional wait time in milliseconds after CAD command
+const CAD_TIMEOUT_MS: u64 = 1000; // CAD operation timeout in milliseconds
 
 /// Radio device initialization errors
 ///
@@ -82,6 +85,25 @@ enum RadioDeviceError {
     TransmissionFailed,
     ReceiveFailed,
     CADFailed,
+    CRCMismatch,
+}
+
+/// Calculate CRC-16-CCITT for packet integrity checking
+/// Polynomial: 0x1021 (x^16 + x^12 + x^5 + 1)
+/// Initial value: 0xFFFF
+fn crc16c(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
 }
 
 /// State of the radio device
@@ -131,7 +153,7 @@ pub struct RadioDevice {
     /// Current state of the device (initialized or not)
     state: RadioDeviceState,
     /// Buffer for receiving radio packets
-    receive_buffer: [u8; RADIO_PACKET_SIZE], // Use consistent constant
+    receive_buffer: [u8; RADIO_PACKET_SIZE + 2], // Use consistent constant
 }
 impl RadioDevice {
     /// Create a new uninitialized radio device
@@ -149,7 +171,7 @@ impl RadioDevice {
     pub const fn new() -> Self {
         RadioDevice {
             state: RadioDeviceState::NotInited,
-            receive_buffer: [0u8; RADIO_PACKET_SIZE],
+            receive_buffer: [0u8; RADIO_PACKET_SIZE + 2],
         }
     }
 
@@ -204,6 +226,7 @@ impl RadioDevice {
         miso_pin: Peri<'static, impl embassy_rp::spi::MisoPin<embassy_rp::peripherals::SPI1>>,
         tx_dma: Peri<'static, embassy_rp::dma::AnyChannel>,
         rx_dma: Peri<'static, embassy_rp::dma::AnyChannel>,
+        tcxo_ctrl: Option<TcxoCtrlVoltage>,
         lora_frequency_in_hz: u32,
         spreading_factor: SpreadingFactor,
         bandwidth: Bandwidth,
@@ -229,7 +252,7 @@ impl RadioDevice {
 
         let config = sx126x::Config {
             chip: Sx1262,
-            tcxo_ctrl: None,
+            tcxo_ctrl: tcxo_ctrl,
             use_dcdc: true,
             rx_boost: false,
         };
@@ -256,7 +279,7 @@ impl RadioDevice {
             }
         };
         let tx_pkt_params = {
-            match lora.create_tx_packet_params(4, false, true, false, &mdltn_params) {
+            match lora.create_tx_packet_params(8, false, true, false, &mdltn_params) {
                 Ok(pp) => pp,
                 Err(_err) => {
                     return Err(RadioDeviceInitError::TXPacketParamsError);
@@ -265,7 +288,12 @@ impl RadioDevice {
         };
 
         let rx_pkt_params = {
-            match lora.create_rx_packet_params(4, false, RADIO_PACKET_SIZE as u8, true, false, &mdltn_params) {
+            #[cfg(feature = "soft-packet-crc")]
+            let rx_buffer_size = (RADIO_PACKET_SIZE + 2) as u8;
+            #[cfg(not(feature = "soft-packet-crc"))]
+            let rx_buffer_size = RADIO_PACKET_SIZE as u8;
+
+            match lora.create_rx_packet_params(8, false, rx_buffer_size, true, false, &mdltn_params) {
                 Ok(pp) => pp,
                 Err(_err) => {
                     return Err(RadioDeviceInitError::RXPacketParamsError);
@@ -288,40 +316,88 @@ impl RadioDevice {
         let mut rng = WyRand::seed_from_u64(rng_seed);
         loop {
             // Race between receiving a packet and getting a TX request
-            match select(self.receive_message(), tx_receiver.receive()).await {
+            match select(self.receive_packet(), tx_receiver.receive()).await {
                 Either::First(rx_result) => match rx_result {
-                    Ok(packet) => {
-                        log::trace!(
-                            "Received packet. Type: {}, from: {}",
-                            packet.packet.message_type(),
-                            packet.packet.sender_node_id()
-                        );
-                        if rx_sender.try_send(packet).is_err() {
+                    Ok(rx_packet) => {
+                        if rx_packet.packet.message_type() == MessageType::AddBlock as u8
+                            || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
+                        {
+                            log::trace!(
+                                "Received RX packet: type: {}, sender: {}, seq: {}, length: {}, packet: {}/{}",
+                                rx_packet.packet.message_type(),
+                                rx_packet.packet.sender_node_id(),
+                                rx_packet.packet.sequence().unwrap_or(0),
+                                rx_packet.packet.length,
+                                rx_packet.packet.packet_index() + 1,
+                                rx_packet.packet.total_packet_count(),
+                            );
+                        } else {
+                            log::trace!(
+                                "Received RX packet: type: {}, sender: {}, length: {}",
+                                rx_packet.packet.message_type(),
+                                rx_packet.packet.sender_node_id(),
+                                rx_packet.packet.length
+                            );
+                        }
+
+                        if rx_sender.try_send(rx_packet).is_err() {
                             log::warn!("RX queue full, dropping received packet.");
                         }
+                    }
+                    Err(RadioDeviceError::CRCMismatch) => {
+                        log::debug!("Dropping packet due to CRC mismatch");
                     }
                     Err(_e) => {
                         log::warn!("Receive error from radio device");
                     }
                 },
                 Either::Second(tx_packet) => {
-                    log::trace!("Received TX packet for transmit. Type: {}", tx_packet.message_type());
+                    if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8 {
+                        log::trace!(
+                            "Transmitting TX packet: type: {}, sender: {}, seq: {}, length: {}, packet: {}/{}",
+                            tx_packet.message_type(),
+                            tx_packet.sender_node_id(),
+                            tx_packet.sequence().unwrap_or(0),
+                            tx_packet.length,
+                            tx_packet.packet_index() + 1,
+                            tx_packet.total_packet_count(),
+                        );
+                    } else {
+                        log::trace!(
+                            "Transmitting TX packet: type: {}, sender: {}, length: {}",
+                            tx_packet.message_type(),
+                            tx_packet.sender_node_id(),
+                            tx_packet.length
+                        );
+                    }
                     // Transmit the packet once: wait for a clear channel, then send and break
                     loop {
-                        match self.do_cad().await {
-                            Ok(false) => {
+                        log::trace!("Starting CAD before transmit");
+                        match select(self.do_cad(), Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS))).await {
+                            Either::First(Ok(false)) => {
                                 // Channel is clear; attempt a single send then exit loop
                                 log::trace!("Channel clear, transmitting packet");
-                                let _ = self.send_message(&tx_packet).await;
+                                if self.send_packet(&tx_packet).await.is_err() {
+                                    log::error!("Failed to transmit packet");
+                                } else {
+                                    log::trace!("Packet transmitted successfully");
+                                }
                                 break;
                             }
-                            Ok(true) | Err(_) => {
-                                // Channel busy or CAD error: wait then retry CAD
-                                log::trace!("Channel busy or CAD error, waiting before retry");
-                                Timer::after(embassy_time::Duration::from_millis(
-                                    CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
-                                ))
-                                .await;
+                            Either::First(Ok(true)) => {
+                                log::trace!("Channel busy, waiting before retry");
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
+                            }
+                            Either::First(Err(_)) => {
+                                log::trace!("CAD error, waiting before retry");
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
+                            }
+                            Either::Second(_) => {
+                                log::trace!("CAD timeout, waiting before retry");
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                         }
                     }
@@ -350,7 +426,7 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn send_message(&mut self, message: &RadioPacket) -> Result<(), RadioDeviceError> {
+    async fn send_packet(&mut self, packet: &RadioPacket) -> Result<(), RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -364,14 +440,39 @@ impl RadioDevice {
                 rx_pkt_params: _,
                 ..
             } => {
+                if packet.length == 0 || packet.length > RADIO_PACKET_SIZE {
+                    return Err(RadioDeviceError::TransmissionFailed);
+                }
+
                 transmit_enable.as_mut().map(|te| te.set_low());
-                let slice = &message.data[..message.length.min(RADIO_PACKET_SIZE)];
-                match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 20, slice).await {
-                    Ok(()) => {}
-                    Err(_err) => {
-                        return Err(RadioDeviceError::TransmissionFailed);
-                    }
-                };
+                #[cfg(feature = "soft-packet-crc")]
+                {
+                    let mut output_buffer = [0u8; RADIO_PACKET_SIZE + 2];
+                    output_buffer[..packet.length].copy_from_slice(&packet.data[..packet.length]);
+                    // Append CRC-16 to the packet data
+                    let crc = crc16c(&packet.data[..packet.length]);
+                    output_buffer[packet.length..packet.length + 2].copy_from_slice(&crc.to_le_bytes());
+
+                    let slice = &output_buffer[..packet.length + 2];
+                    log::trace!("Calculated CRC-16: {:04X}", crc);
+
+                    match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice).await {
+                        Ok(()) => {}
+                        Err(_err) => {
+                            return Err(RadioDeviceError::TransmissionFailed);
+                        }
+                    };
+                }
+                #[cfg(not(feature = "soft-packet-crc"))]
+                {
+                    let slice = &packet.data[..packet.length.min(RADIO_PACKET_SIZE)];
+                    match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice).await {
+                        Ok(()) => {}
+                        Err(_err) => {
+                            return Err(RadioDeviceError::TransmissionFailed);
+                        }
+                    };
+                }
 
                 match lora.tx().await {
                     Ok(()) => {
@@ -407,7 +508,7 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn receive_message(&mut self) -> Result<ReceivedPacket, RadioDeviceError> {
+    async fn receive_packet(&mut self) -> Result<ReceivedPacket, RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -429,18 +530,49 @@ impl RadioDevice {
                     Ok((rx_len, packet_status)) => {
                         // Create RadioPacket from received data
                         let mut data = [0u8; RADIO_PACKET_SIZE];
-                        if rx_len > RADIO_PACKET_SIZE as u8 {
+                        if rx_len > (RADIO_PACKET_SIZE + 2) as u8 {
                             return Err(RadioDeviceError::ReceiveFailed);
                         }
                         let copy_len = rx_len as usize;
-                        data[..copy_len].copy_from_slice(&self.receive_buffer[..copy_len]);
 
-                        Ok(ReceivedPacket {
-                            packet: RadioPacket { data, length: copy_len },
-                            link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
-                        })
+                        #[cfg(feature = "soft-packet-crc")]
+                        {
+                            // Verify CRC-16 on received packet
+                            if copy_len < 2 {
+                                return Err(RadioDeviceError::ReceiveFailed);
+                            }
+                            let data_len = copy_len - 2;
+                            let received_crc = u16::from_le_bytes([self.receive_buffer[data_len], self.receive_buffer[data_len + 1]]);
+                            let calculated_crc = crc16c(&self.receive_buffer[..data_len]);
+
+                            if received_crc != calculated_crc {
+                                log::trace!(
+                                    "CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
+                                    received_crc,
+                                    calculated_crc
+                                );
+                                return Err(RadioDeviceError::CRCMismatch);
+                            }
+
+                            // Copy only the data portion (without CRC)
+                            data[..data_len].copy_from_slice(&self.receive_buffer[..data_len]);
+
+                            Ok(ReceivedPacket {
+                                packet: RadioPacket { data, length: data_len },
+                                link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
+                            })
+                        }
+                        #[cfg(not(feature = "soft-packet-crc"))]
+                        {
+                            data[..copy_len].copy_from_slice(&self.receive_buffer[..copy_len]);
+
+                            Ok(ReceivedPacket {
+                                packet: RadioPacket { data, length: copy_len },
+                                link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
+                            })
+                        }
                     }
-                    Err(_err) => Err(RadioDeviceError::TransmissionFailed),
+                    Err(_err) => Err(RadioDeviceError::ReceiveFailed),
                 }
             }
         }
@@ -498,5 +630,50 @@ impl RadioDevice {
     /// ```
     pub fn is_initialized(&self) -> bool {
         matches!(self.state, RadioDeviceState::Inited { .. })
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crc16c_empty() {
+        let data = [];
+        let crc = crc16c(&data);
+        assert_eq!(crc, 0xFFFF);
+    }
+
+    #[test]
+    fn test_crc16c_single_byte() {
+        let data = [0x00];
+        let crc = crc16c(&data);
+        assert_ne!(crc, 0xFFFF);
+    }
+
+    #[test]
+    fn test_crc16c_known_values() {
+        // Test with a known pattern
+        let data = b"123456789";
+        let crc = crc16c(data);
+        // CRC-16-CCITT with init 0xFFFF for "123456789" should be 0x29B1
+        assert_eq!(crc, 0x29B1);
+    }
+
+    #[test]
+    fn test_crc16c_deterministic() {
+        let data = [0x01, 0x02, 0x03, 0x04, 0x05];
+        let crc1 = crc16c(&data);
+        let crc2 = crc16c(&data);
+        assert_eq!(crc1, crc2);
+    }
+
+    #[test]
+    fn test_crc16c_sensitivity() {
+        let data1 = [0x01, 0x02, 0x03];
+        let data2 = [0x01, 0x02, 0x04];
+        let crc1 = crc16c(&data1);
+        let crc2 = crc16c(&data2);
+        assert_ne!(crc1, crc2);
     }
 }

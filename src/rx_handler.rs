@@ -149,7 +149,24 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if packet_index as usize >= total_packet_count {
-                        log!(Level::Error, "Packet index out of bounds: {}", packet_index);
+                        if let Some(sequence) = rx_packet.sequence() {
+                            log!(
+                                Level::Warn,
+                                "Packet index out of bounds: sender: {}, sequence: {}, index: {}/{}",
+                                rx_packet.sender_node_id(),
+                                sequence,
+                                packet_index + 1,
+                                total_packet_count
+                            );
+                        } else {
+                            log!(
+                                Level::Warn,
+                                "Packet index out of bounds: sender: {}, index: {}/{}",
+                                rx_packet.sender_node_id(),
+                                packet_index + 1,
+                                total_packet_count
+                            );
+                        }
                         continue;
                     }
 
@@ -392,7 +409,7 @@ pub(crate) async fn rx_handler_task(
                             for i in 0..missing_packet.packet.total_packet_count() as usize {
                                 if packet_check_buffer[i] == PACKET_CHECK_BUFFER_EMPTY_VALUE {
                                     log!(
-                                        Level::Info,
+                                        Level::Debug,
                                         "Requesting missing packet index {} for message type {}, sequence {}, payload_checksum {}",
                                         i,
                                         missing_packet.packet.message_type(),
@@ -437,6 +454,29 @@ fn process_message(
     incoming_message_queue_sender: IncomingMessageQueueSender,
     relay_manager: &mut RelayManager<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>,
 ) {
+    //crc check
+    if message.message_type() == MessageType::AddBlock as u8 || message.message_type() == MessageType::AddTransaction as u8 {
+        if !message.check_payload_checksum() {
+            if let Some(sequence) = message.sequence() {
+                log!(
+                    Level::Warn,
+                    "CRC check failed for message: type: {}, sequence: {}, sender: {}. Dropping message.",
+                    message.message_type(),
+                    sequence,
+                    message.sender_node_id()
+                );
+            } else {
+                log!(
+                    Level::Warn,
+                    "CRC check failed for message without sequence: type: {}, sender: {}. Dropping message.",
+                    message.message_type(),
+                    message.sender_node_id()
+                );
+            }
+            return;
+        }
+    }
+
     let mut should_process = true;
     let relay_result = relay_manager.process_received_message(&message, last_link_quality);
 
