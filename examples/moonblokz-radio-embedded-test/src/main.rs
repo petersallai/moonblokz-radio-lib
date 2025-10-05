@@ -22,9 +22,9 @@ use lora_phy::mod_params::{Bandwidth, CodingRate, SpreadingFactor};
 use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
 use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
-// Note: frequency is set when initializing RadioDevice.
 
-const TEST_BLOCK_SIZE: usize = 1700;
+const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
+const SEND_MESSAGE_INTERVAL_SECS: u64 = 60; // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
@@ -65,7 +65,6 @@ async fn main(spawner: Spawner) {
     let mut own_node_id = match flash.blocking_unique_id(&mut uid) {
         Ok(_) => {
             let uidu32 = u32::from_le_bytes(uid[2..6].try_into().unwrap()) % 9999 + 1;
-            log::info!("Unique ID: {}", uidu32);
             uidu32
         }
         Err(e) => {
@@ -78,8 +77,10 @@ async fn main(spawner: Spawner) {
         own_node_id += 1000; // Ensure node ID is at least 1000 to be the same length
     }
 
-    let mut radio_device: RadioDevice = RadioDevice::new();
+    log::info!("Own node id: {}", own_node_id);
 
+    let mut radio_device: RadioDevice = RadioDevice::new();
+    //TODO: use some general configuration for the radio, not hardcoded node_id
     if own_node_id == 2754 {
         //RP2040+Lora module
         if radio_device
@@ -156,8 +157,8 @@ async fn main(spawner: Spawner) {
     log::info!("Radio communication manager initialized");
     let mut sequence_number: u32 = own_node_id * 10000;
     let mut arrived_sequences: Vec<u32, 1000> = Vec::new();
-    const SEND_MESSAGE_INTERVAL_SECS: u64 = 60;
     let mut next_send_time = embassy_time::Instant::now() + Duration::from_secs(5);
+
     loop {
         match select(radio_communication_manager.receive_message(), Timer::at(next_send_time)).await {
             Either::First(message) => {
@@ -165,7 +166,7 @@ async fn main(spawner: Spawner) {
                     if msg.message_type() == moonblokz_radio_lib::MessageType::AddBlock as u8 {
                         if let Some(sequence) = msg.sequence() {
                             if arrived_sequences.contains(&sequence) {
-                                // Already have message, should we report back?
+                                // TODO: Already have message, should we report back?
                             } else {
                                 log::info!(
                                     "Received AddBlock: sender: {}, sequence: {} length: {}",
@@ -174,6 +175,10 @@ async fn main(spawner: Spawner) {
                                     msg.length()
                                 );
                                 radio_communication_manager.report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::NewBlockAdded(msg));
+                                if arrived_sequences.len() == arrived_sequences.capacity() {
+                                    // Remove the oldest sequence to make space
+                                    arrived_sequences.remove(0);
+                                }
                                 arrived_sequences.push(sequence).unwrap_or_else(|_| {
                                     log::error!("Arrived sequences buffer full, cannot track more sequences");
                                 });
@@ -229,6 +234,10 @@ async fn main(spawner: Spawner) {
                     );
                     if radio_communication_manager.send_message(message).is_err() {
                         log::error!("Failed to send message with sequence number {}", sequence_number);
+                    }
+                    if arrived_sequences.len() == arrived_sequences.capacity() {
+                        // Remove the oldest sequence to make space
+                        arrived_sequences.remove(0);
                     }
                     arrived_sequences.push(sequence_number).unwrap_or_else(|_| {
                         log::error!("Arrived sequences buffer full, cannot track more sequences.");

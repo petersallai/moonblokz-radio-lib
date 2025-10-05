@@ -116,6 +116,12 @@ pub(crate) async fn rx_handler_task(
             Either4::First(received_packet) => {
                 let rx_packet = received_packet.packet;
                 if rx_packet.total_packet_count() == 1 {
+                    log::trace!(
+                        "Received single-packet message: type: {}, sender: {}, length: {}",
+                        rx_packet.message_type(),
+                        rx_packet.sender_node_id(),
+                        rx_packet.length
+                    );
                     let radio_message = RadioMessage::from_single_packet(rx_packet);
                     process_message(
                         radio_message,
@@ -129,6 +135,14 @@ pub(crate) async fn rx_handler_task(
                     continue;
                 } else {
                     // Handle multi-packet message
+                    log::trace!(
+                        "Received multi-packet message: type: {}, sender: {}, length: {}, packet {}/{}",
+                        rx_packet.message_type(),
+                        rx_packet.sender_node_id(),
+                        rx_packet.length,
+                        rx_packet.packet_index() + 1,
+                        rx_packet.total_packet_count()
+                    );
                     let packet_index = rx_packet.packet_index() as usize;
                     let total_packet_count = rx_packet.total_packet_count() as usize;
 
@@ -205,7 +219,9 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if first_from_message {
+                        log::trace!("First packet from new message received.");
                         if last_received_messages.contains_message(&rx_packet) {
+                            log!(Level::Trace, "Already have full message in last received messages cache, skipping.");
                             //if we already have the full message (in the last received messages list), we can skip it.
                             continue;
                         } else {

@@ -126,6 +126,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
 
     pub(crate) fn process_timed_tasks(&mut self) -> RelayResult {
         if Instant::now() >= self.next_echo_request_time {
+            log::debug!("Sending echo request");
             let mut message_count = 2 * self.connected_nodes_count + self.connected_nodes_count * (self.connected_nodes_count - 1); // Echo request + Echo responses + Echo results
             if message_count == 0 {
                 message_count = 1; // Ensure at least one message is sent
@@ -146,6 +147,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         }
 
         if Instant::now() >= self.echo_gathering_end_time.unwrap_or(Instant::MAX) {
+            log::debug!("Echo gathering timeout passed, sending echo results");
             // If echo gathering timeout has passed, reset the echo gathering end time
             self.echo_gathering_end_time = None;
             // Send an echo result message with the current connection matrix
@@ -209,6 +211,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         // find the connection matrix index for the sender node
         let mut sender_index_opt = self.connection_matrix_nodes.iter().position(|&id| id == message.sender_node_id());
         if sender_index_opt.is_none() {
+            log::trace!("Adding new sender node to connection matrix: {}", message.sender_node_id());
             // If the sender node is not in the connection matrix, add it
             if self.connected_nodes_count < CONNECTION_MATRIX_SIZE {
                 sender_index_opt = Some(self.connected_nodes_count);
@@ -217,6 +220,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 self.connection_matrix_nodes[self.connected_nodes_count] = message.sender_node_id();
                 self.connected_nodes_count += 1;
             } else {
+                log::trace!("Connection matrix full, finding lowest quality node to replace");
                 //find the node with the lowest link quality and replace it
                 let mut lowest_quality_index = CONNECTION_MATRIX_SIZE;
                 let mut lowest_quality = 255;
@@ -230,6 +234,11 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
 
                 // If we found a node with lower link quality, replace it
                 if lowest_quality < last_link_quality {
+                    log::trace!(
+                        "Replacing node {} with new node {} in connection matrix",
+                        self.connection_matrix_nodes[lowest_quality_index],
+                        message.sender_node_id()
+                    );
                     sender_index_opt = Some(lowest_quality_index);
                     // Notify wait pool that a connection matrix item has changed
                     self.wait_pool.connection_matrix_item_changed(lowest_quality_index);

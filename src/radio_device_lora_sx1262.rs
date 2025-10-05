@@ -333,10 +333,11 @@ impl RadioDevice {
                             );
                         } else {
                             log::trace!(
-                                "Received RX packet: type: {}, sender: {}, length: {}",
+                                "Received RX packet: type: {}, sender: {}, length: {}, link_quality: {}",
                                 rx_packet.packet.message_type(),
                                 rx_packet.packet.sender_node_id(),
-                                rx_packet.packet.length
+                                rx_packet.packet.length,
+                                rx_packet.link_quality
                             );
                         }
 

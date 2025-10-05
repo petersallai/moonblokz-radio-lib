@@ -11,10 +11,11 @@
 - Add a block comment to every file
 - Review comments
 - Write a comprehensive README.MD
-- Feature flag for deriving debug
+- Feature flag for deriving debug?
 - Logging:
   - Comprehensive logging
   - Logging level feature to filter logs in compile time
+  - Log important messages to create visualization
 - Memory management:
   - Profile memory usage
   - Create features for different memory setups
