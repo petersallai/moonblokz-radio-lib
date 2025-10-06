@@ -4,13 +4,8 @@
 
 - Finish embedded example project
 - Documentation
-- Structure refactor:
-  - Move entities to separate folder
-  - Separate RadioMessage and RadioPacket
-- Check visibility rules
-- Add a block comment to every file
-- Review comments
-- Write a comprehensive README.MD
+  - Review comments by hand
+  - Write a comprehensive README.MD
 - Feature flag for deriving debug?
 - Logging:
   - Comprehensive logging

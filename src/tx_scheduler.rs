@@ -1,3 +1,36 @@
+//! # TX Scheduler Module
+//!
+//! Manages transmission timing and packet scheduling to avoid collisions and ensure
+//! fair channel access in the radio mesh network.
+//!
+//! ## Architecture
+//!
+//! The TX Scheduler is implemented as an async task that:
+//! - Receives messages from the outgoing message queue
+//! - Fragments messages into packets
+//! - Schedules packet transmission with appropriate delays
+//! - Monitors RX state to avoid transmitting during multi-packet reception
+//!
+//! ## Transmission Strategy
+//!
+//! 1. **Initial Random Delay**: Each message starts with a random delay (0-2000ms) to
+//!    reduce the probability of collisions when multiple nodes want to transmit
+//!
+//! 2. **Inter-Packet Delay**: Configurable delay between packets of the same message
+//!    to allow other nodes to access the channel
+//!
+//! 3. **Inter-Message Delay**: Configurable delay between different messages to ensure
+//!    fair channel access
+//!
+//! 4. **RX State Awareness**: Pauses transmission during multi-packet reception to
+//!    avoid interrupting incoming messages
+//!
+//! ## Configuration
+//!
+//! - `delay_between_tx_packets`: Delay in seconds between individual packets
+//! - `delay_between_tx_messages`: Delay in seconds between complete messages
+//! - Random jitter is added to prevent systematic collisions
+
 use core::cmp::max;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
@@ -9,7 +42,7 @@ use rand_wyrand::WyRand;
 use crate::MAX_NODE_COUNT;
 use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 
-const RANDOM_DELAY_MAX: u64 = 2000; // Maximum random delay in milliseconds
+const RANDOM_DELAY_MAX: u64 = 500; // Maximum random delay in milliseconds
 
 /// TX Scheduler Task
 ///

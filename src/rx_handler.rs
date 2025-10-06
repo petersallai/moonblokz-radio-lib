@@ -1,3 +1,42 @@
+//! # RX Handler - Reception and Packet Assembly
+//!
+//! This module implements the receive-side message processing pipeline for the radio
+//! communication system. It handles incoming packets, assembles multi-packet messages,
+//! deduplicates received messages, and coordinates message processing with relay decisions.
+//!
+//! ## Architecture
+//!
+//! The RX handler operates as an async task that:
+//! - Receives raw packets from the radio device through a channel
+//! - Buffers and assembles multi-packet messages
+//! - Maintains a duplicate detection cache
+//! - Processes complete messages for local handling or relay
+//! - Integrates with the RelayManager for forwarding decisions
+//! - Coordinates with WaitPool for request-response matching
+//!
+//! ## Key Components
+//!
+//! - **PacketBuffer**: Stores incoming packets with timestamps for multi-packet message assembly
+//! - **LastReceivedMessages**: Circular buffer cache to prevent duplicate message processing
+//! - **RelayManager Integration**: Coordinates topology-aware message forwarding
+//! - **Message Assembly**: Reconstructs RadioMessages from fragmented RadioPackets
+//!
+//! ## Processing Flow
+//!
+//! 1. Receive packet from radio device
+//! 2. Update RX state to prevent transmission conflicts
+//! 3. Check for duplicate packets/messages
+//! 4. Buffer single-packet messages or assemble multi-packet messages
+//! 5. Process complete messages (local handling or relay decision)
+//! 6. Forward to appropriate queues based on message type and relay decision
+//!
+//! ## Design Considerations
+//!
+//! - Duplicate detection uses sequence numbers and payload checksums
+//! - Multi-packet assembly has configurable buffer size and timeout
+//! - RX state signaling prevents transmit/receive collisions
+//! - Integration with WaitPool enables request-response pattern matching
+
 use crate::relay_manager::RelayResult;
 use crate::{
     CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, IncomingMessageItem, LAST_RECEIVED_MESSAGE_BUFFER_SIZE, MAX_NODE_COUNT, MessageProcessingResult,
@@ -16,28 +55,51 @@ use crate::{
     relay_manager::RelayManager,
 };
 
+/// Buffered packet with arrival timestamp for assembly tracking
+///
+/// Used to store packets temporarily while multi-packet messages are being
+/// assembled. The arrival time helps detect and clean up stale packets.
 struct PacketBufferItem {
+    /// The received radio packet
     packet: RadioPacket,
+
+    /// Time when this packet was received
     arrival_time: Instant,
 }
 
+/// Sentinel value indicating an empty slot in the packet check buffer
 const PACKET_CHECK_BUFFER_EMPTY_VALUE: u8 = 255;
 
+/// Record of a received message for duplicate detection
+///
+/// Stores minimal identifying information about a processed message to
+/// enable fast duplicate checking without storing entire payloads.
 struct LastReceivedMessage {
+    /// Message type byte
     message_type: u8,
+
+    /// Message sequence number
     sequence: u32,
+
+    /// CRC32C checksum of the payload
     payload_checksum: u32,
 }
 
-/*
-This struct is a cache of the last received and checked full messages to avoid processing duplicates.
- */
+/// Circular buffer cache of recently received messages for duplicate detection
+///
+/// Maintains a fixed-size history of processed messages to quickly identify
+/// and reject duplicates. Uses a circular buffer to automatically age out
+/// old entries.
 struct LastReceivedMessages {
+    /// Fixed-size array of optional message records
     messages: [Option<LastReceivedMessage>; LAST_RECEIVED_MESSAGE_BUFFER_SIZE],
+
+    /// Current insertion position in the circular buffer
     circular_index: usize,
 }
 
 impl LastReceivedMessages {
+    /// Creates a new empty duplicate detection cache
     const fn new() -> Self {
         Self {
             messages: [const { None }; LAST_RECEIVED_MESSAGE_BUFFER_SIZE],
@@ -45,12 +107,28 @@ impl LastReceivedMessages {
         }
     }
 
+    /// Adds a received message to the duplicate detection cache
+    ///
+    /// Extracts identifying information from the message and stores it.
+    /// Only messages with sequence numbers and checksums are tracked.
+    ///
+    /// # Arguments
+    /// * `message` - The received message to record
     fn add_message(&mut self, message: &RadioMessage) {
         if let (Some(sequence), Some(payload_checksum)) = (message.sequence(), message.payload_checksum()) {
             self.add_message_with_parameters(message.message_type(), sequence, payload_checksum);
         }
     }
 
+    /// Adds a message record with explicit parameters
+    ///
+    /// Inserts a new entry into the circular buffer, overwriting the oldest
+    /// entry when the buffer is full.
+    ///
+    /// # Arguments
+    /// * `message_type` - Type of the message
+    /// * `sequence` - Sequence number
+    /// * `payload_checksum` - CRC32C checksum of payload
     fn add_message_with_parameters(&mut self, message_type: u8, sequence: u32, payload_checksum: u32) {
         self.messages[self.circular_index] = Some(LastReceivedMessage {
             message_type: message_type,
@@ -60,8 +138,19 @@ impl LastReceivedMessages {
         self.circular_index = (self.circular_index + 1) % LAST_RECEIVED_MESSAGE_BUFFER_SIZE;
     }
 
+    /// Checks if a packet matches any recently received message
+    ///
+    /// Used for duplicate detection. Compares the packet's identifying
+    /// information against the cache of recently processed messages.
+    ///
+    /// # Arguments
+    /// * `packet` - The packet to check
+    ///
+    /// # Returns
+    /// true if this packet/message was already received, false otherwise
     fn contains_message(&self, packet: &RadioPacket) -> bool {
         if let (Some(sequence), Some(payload_checksum)) = (packet.sequence(), packet.payload_checksum()) {
+            //perform linear search - the buffer is small so this is efficient enough
             for entry in self.messages.iter().flatten() {
                 if entry.message_type == packet.message_type() && entry.sequence == sequence && entry.payload_checksum == payload_checksum {
                     return true;
@@ -72,6 +161,35 @@ impl LastReceivedMessages {
     }
 }
 
+/// RX Handler Task - Packet Reception and Message Assembly
+///
+/// This async task processes received packets, assembles multi-packet messages,
+/// detects duplicates, and coordinates with the relay manager for forwarding decisions.
+///
+/// # Responsibilities
+///
+/// 1. **Packet Reception**: Receives packets from the radio device queue
+/// 2. **Duplicate Detection**: Checks packets against recently received cache
+/// 3. **Message Assembly**: Reconstructs multi-packet messages from individual packets
+/// 4. **Processing Coordination**: Sends messages to application for processing
+/// 5. **Relay Management**: Works with RelayManager for network topology and forwarding
+/// 6. **Echo Protocol**: Handles echo requests, responses, and result aggregation
+///
+/// # Parameters
+///
+/// * `incoming_message_queue_sender` - Sends assembled messages to application
+/// * `outgoing_message_queue_sender` - Queues messages for relay/transmission
+/// * `rx_packet_queue_receiver` - Receives packets from radio device
+/// * `rx_state_queue_sender` - Signals RX state to TX scheduler
+/// * `process_result_queue_receiver` - Receives processing results from application
+/// * `echo_request_minimal_interval` - Minimum time between echo requests (seconds)
+/// * `echo_messages_target_interval` - Target number of messages between echoes
+/// * `echo_gathering_timeout` - Time to collect echo responses (seconds)
+/// * `relay_position_delay` - Base delay for relay position calculation (seconds)
+/// * `scoring_matrix` - Configuration for relay scoring decisions
+/// * `retry_interval_for_missing_packets` - Retry interval for incomplete messages (seconds)
+/// * `own_node_id` - This node's unique network identifier
+/// * `rng_seed` - Seed for random number generation
 #[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
 pub(crate) async fn rx_handler_task(
     incoming_message_queue_sender: IncomingMessageQueueSender,
@@ -157,9 +275,16 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if packet_index == total_packet_count - 1 {
-                        _ = rx_state_queue_sender.try_send(RxState::PacketedRxEnded);
+                        if rx_state_queue_sender.try_send(RxState::PacketedRxEnded).is_err() {
+                            log::warn!("Failed to send PacketedRxEnded to rx_state_queue. The queue is full.");
+                        }
                     } else {
-                        _ = rx_state_queue_sender.try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8));
+                        if rx_state_queue_sender
+                            .try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8))
+                            .is_err()
+                        {
+                            log::warn!("Failed to send PacketedRxInProgress to rx_state_queue. The queue is full.");
+                        }
                     }
 
                     if packet_index as usize >= total_packet_count {
@@ -463,6 +588,38 @@ pub(crate) async fn rx_handler_task(
     }
 }
 
+/// Processes a fully assembled message for relay and application delivery
+///
+/// This function performs validation, relay coordination, and routing for received messages.
+/// It handles CRC checking for critical message types, coordinates with the relay manager
+/// for network forwarding decisions, and routes messages to the appropriate queue based on type.
+///
+/// # Processing Steps
+///
+/// 1. **CRC Validation**: For AddBlock and AddTransaction messages, verifies payload integrity
+/// 2. **Relay Coordination**: Consults RelayManager for forwarding/duplicate detection
+/// 3. **Queue Routing**: Routes eligible messages to outgoing (relay) or incoming (app) queues
+///
+/// # Arguments
+///
+/// * `message` - The fully assembled message to process
+/// * `last_link_quality` - Link quality from the last received packet (0-255)
+/// * `outgoing_message_queue_sender` - Queue sender for messages to relay/forward
+/// * `incoming_message_queue_sender` - Queue sender for messages to deliver to application
+/// * `relay_manager` - RelayManager instance for network topology and forwarding decisions
+///
+/// # Message Type Handling
+///
+/// Messages are categorized into:
+/// - **Echo Protocol**: RequestEcho, EchoResult - handled by RelayManager only
+/// - **Application Messages**: AddBlock, AddTransaction, Support, etc. - routed to application
+/// - **Relay-only Messages**: Already-processed duplicates are not forwarded to application
+///
+/// # Error Handling
+///
+/// - Invalid CRC: Message is logged and dropped
+/// - Full queues: Message is logged and dropped with warning
+/// - Duplicates: Detected by RelayManager, not routed to application
 fn process_message(
     message: RadioMessage,
     last_link_quality: u8,

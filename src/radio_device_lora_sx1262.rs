@@ -1,5 +1,64 @@
+//! # LoRa SX1262 Radio Device - Hardware Abstraction for SX1262 Transceiver
+//!
+//! This module provides a complete hardware abstraction layer for the Semtech SX1262
+//! LoRa transceiver chip. It implements async radio operations with Embassy framework
+//! integration and provides a type-safe interface for radio communication.
+//!
+//! ## Architecture
+//!
+//! The radio device implementation uses a state machine approach:
+//! - **Uninitialized**: Initial state before hardware setup
+//! - **Idle**: Radio is ready but not actively transmitting or receiving
+//! - **Transmitting**: Currently sending a packet
+//! - **Receiving**: Currently listening for packets
+//! - **CAD (Channel Activity Detection)**: Scanning for channel activity before TX
+//!
+//! ## Key Components
+//!
+//! - **RadioDevice<S>**: Main state machine generic over state type
+//!   - State transitions enforce valid operation sequences
+//!   - Compile-time guarantees prevent invalid operations (e.g., TX while RX)
+//!
+//! - **SPI Communication**: Low-level interface to SX1262 chip
+//!   - Command abstraction with register access
+//!   - Busy pin monitoring for chip state
+//!   - DMA support for efficient data transfer
+//!
+//! - **Packet Parameters**: Separate TX and RX configuration
+//!   - Configurable preamble length, header type, CRC
+//!   - Power amplifier configuration (PA_CONFIG)
+//!   - Modulation parameters (spreading factor, bandwidth, coding rate)
+//!
+//! - **Queue Integration**: Async channel-based communication
+//!   - TX packet queue: receives packets from scheduler
+//!   - RX packet queue: forwards received packets to handler
+//!   - Non-blocking operation with Embassy async primitives
+//!
+//! ## Channel Activity Detection (CAD)
+//!
+//! Before transmitting, CAD scans the channel for existing activity:
+//! - Reduces packet collisions in dense networks
+//! - Configurable detection parameters
+//! - Falls back to immediate transmission if channel is clear
+//!
+//! ## Design Considerations
+//!
+//! - Generic state machine provides compile-time safety
+//! - SPI operations use DMA for performance on embedded systems
+//! - Packet size is fixed at compile time (RADIO_PACKET_SIZE)
+//! - Link quality calculation uses RSSI values from radio
+//! - Embassy async integration enables non-blocking operation
+//! - Type-safe pin configuration with generic constraints
+//!
+//! ## Hardware Requirements
+//!
+//! - SX1262 LoRa transceiver chip
+//! - SPI interface (MOSI, MISO, CLK, NSS pins)
+//! - Control pins: RESET, DIO1, BUSY
+//! - Optional: ANT_SW (antenna switch control)
+//! - DMA channels for TX and RX operations
+
 use crate::MessageType;
-use crate::RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
 /// LoRa SX1262 Radio Device Implementation
 ///
 /// This module provides a complete radio device implementation for the SX1262 LoRa transceiver,
@@ -59,9 +118,24 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
-const CAD_MINIMAL_WAIT_TIME: u64 = 300; // Minimum wait time in milliseconds after CAD command
-const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200; // Maximum additional wait time in milliseconds after CAD command
-const CAD_TIMEOUT_MS: u64 = 1000; // CAD operation timeout in milliseconds
+/// Radio hardware dependent constants:
+///
+/// Minimum wait time in milliseconds after CAD detects a busy channel
+///
+/// When Channel Activity Detection indicates the channel is busy, the radio
+/// waits at least this duration before attempting CAD again.
+const CAD_MINIMAL_WAIT_TIME: u64 = 300;
+
+/// Maximum additional random wait time in milliseconds after CAD
+///
+/// Added to CAD_MINIMAL_WAIT_TIME to create randomized backoff, helping to
+/// avoid synchronized collisions when multiple nodes detect the same busy channel.
+const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200;
+
+/// CAD operation timeout in milliseconds
+///
+/// Maximum time to wait for a CAD operation to complete before considering it failed.
+const CAD_TIMEOUT_MS: u64 = 1000;
 
 /// Radio device initialization errors
 ///
@@ -80,18 +154,48 @@ pub enum RadioDeviceInitError {
     RXPacketParamsError,
 }
 
+/// Internal radio device errors
+///
+/// These errors represent failures during radio operations. Unlike
+/// `RadioDeviceInitError`, these occur during runtime operation rather
+/// than initialization.
 enum RadioDeviceError {
+    /// Device was not initialized before attempting an operation
     InitializationFailed,
+    /// Failed to transmit a packet
     TransmissionFailed,
+    /// Failed to receive a packet
     ReceiveFailed,
+    /// Channel Activity Detection operation failed
     CADFailed,
+    /// Received packet failed CRC verification (soft-packet-crc feature)
     CRCMismatch,
 }
 
 /// Calculate CRC-16-CCITT for packet integrity checking
-/// Polynomial: 0x1021 (x^16 + x^12 + x^5 + 1)
-/// Initial value: 0xFFFF
-fn crc16c(data: &[u8]) -> u16 {
+///
+/// Implements the CRC-16-CCITT algorithm with polynomial 0x1021 and
+/// initial value 0xFFFF. Used when the `soft-packet-crc` feature is enabled
+/// to provide packet integrity verification in software.
+///
+/// # Parameters
+/// * `data` - Byte slice to calculate CRC for
+///
+/// # Returns
+/// 16-bit CRC value
+///
+/// # Algorithm
+/// - Polynomial: 0x1021 (x^16 + x^12 + x^5 + 1)
+/// - Initial value: 0xFFFF
+/// - No final XOR
+///
+/// # Examples
+/// ```rust,ignore
+/// let data = b"123456789";
+/// let crc = checksum16(data);
+/// assert_eq!(crc, 0x29B1);
+/// ```
+fn checksum16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {
         crc ^= (byte as u16) << 8;
@@ -136,6 +240,32 @@ enum RadioDeviceState {
     },
 }
 
+/// LoRa SX1262 radio device task - manages TX/RX operations
+///
+/// This async task runs the main radio loop, alternating between receiving
+/// packets and transmitting queued packets. It handles Channel Activity Detection
+/// (CAD) before transmission to avoid collisions.
+///
+/// # Task Pool
+/// - Embedded builds: pool_size = 1 (single radio instance)
+/// - Std builds: pool_size = 100 (testing/simulation with many nodes)
+///
+/// # Arguments
+/// * `radio_device` - Initialized RadioDevice instance
+/// * `tx_receiver` - Channel receiver for outgoing packets
+/// * `rx_sender` - Channel sender for incoming packets
+/// * `rng_seed` - Seed for random number generator (used for CAD backoff)
+///
+/// # Behavior
+/// - Continuously races between RX and TX operations
+/// - On RX: Receives packet and forwards to RX queue (drops if full)
+/// - On TX: Performs CAD, waits if channel busy, transmits when clear
+/// - Logs packet details at trace level for debugging
+/// - Never returns (runs until executor stops)
+///
+/// # CAD Backoff
+/// When CAD detects a busy channel, waits CAD_MINIMAL_WAIT_TIME plus a
+/// random duration up to CAD_MAX_ADDITIONAL_WAIT_TIME before retrying.
 #[cfg_attr(feature = "std", embassy_executor::task(pool_size = 100))]
 #[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
 pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, rng_seed: u64) -> ! {
@@ -312,6 +442,36 @@ impl RadioDevice {
         Ok(())
     }
 
+    /// Main radio loop - handles TX/RX operations with CAD
+    ///
+    /// This is the core operation loop that continuously races between receiving
+    /// packets and transmitting queued packets. It implements intelligent channel
+    /// access using CAD to avoid collisions.
+    ///
+    /// # Parameters
+    /// * `tx_receiver` - Channel receiver for outgoing packets from TX scheduler
+    /// * `rx_sender` - Channel sender for incoming packets to RX handler
+    /// * `rng_seed` - Seed for random number generator (used for backoff timing)
+    ///
+    /// # Returns
+    /// Never returns (infinite loop)
+    ///
+    /// # Operation Flow
+    /// 1. Race between `receive_packet()` and `tx_receiver.receive()`
+    /// 2. If RX wins: Process received packet, forward to RX queue
+    /// 3. If TX wins: Perform CAD loop until channel clear, then transmit
+    ///
+    /// # CAD Loop
+    /// - Check channel activity with timeout
+    /// - If clear: transmit packet and exit loop
+    /// - If busy/error/timeout: wait random duration and retry
+    /// - Random backoff prevents synchronized collision
+    ///
+    /// # Error Handling
+    /// - RX CRC mismatch: Log and continue (packet dropped)
+    /// - RX queue full: Drop packet and log warning
+    /// - TX failure: Log error and continue
+    /// - CAD failure: Wait and retry
     async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, rng_seed: u64) -> ! {
         let mut rng = WyRand::seed_from_u64(rng_seed);
         loop {
@@ -451,7 +611,7 @@ impl RadioDevice {
                     let mut output_buffer = [0u8; RADIO_PACKET_SIZE + 2];
                     output_buffer[..packet.length].copy_from_slice(&packet.data[..packet.length]);
                     // Append CRC-16 to the packet data
-                    let crc = crc16c(&packet.data[..packet.length]);
+                    let crc = checksum16(&packet.data[..packet.length]);
                     output_buffer[packet.length..packet.length + 2].copy_from_slice(&crc.to_le_bytes());
 
                     let slice = &output_buffer[..packet.length + 2];
@@ -493,7 +653,8 @@ impl RadioDevice {
     ///
     /// Configures the radio for continuous receive mode and waits for an incoming packet.
     /// The received data is copied to a RadioPacket structure with metadata extracted
-    /// from the first few bytes.
+    /// from the first few bytes. DOS protection is not required in this use-case,
+    /// because the bottleneck here is the LoRa network's speed.
     ///
     /// # Returns
     /// * `Ok(RadioPacket)` containing the received data and metadata
@@ -544,7 +705,7 @@ impl RadioDevice {
                             }
                             let data_len = copy_len - 2;
                             let received_crc = u16::from_le_bytes([self.receive_buffer[data_len], self.receive_buffer[data_len + 1]]);
-                            let calculated_crc = crc16c(&self.receive_buffer[..data_len]);
+                            let calculated_crc = checksum16(&self.receive_buffer[..data_len]);
 
                             if received_crc != calculated_crc {
                                 log::trace!(
@@ -641,14 +802,14 @@ mod tests {
     #[test]
     fn test_crc16c_empty() {
         let data = [];
-        let crc = crc16c(&data);
+        let crc = checksum16(&data);
         assert_eq!(crc, 0xFFFF);
     }
 
     #[test]
     fn test_crc16c_single_byte() {
         let data = [0x00];
-        let crc = crc16c(&data);
+        let crc = checksum16(&data);
         assert_ne!(crc, 0xFFFF);
     }
 
@@ -656,7 +817,7 @@ mod tests {
     fn test_crc16c_known_values() {
         // Test with a known pattern
         let data = b"123456789";
-        let crc = crc16c(data);
+        let crc = checksum16(data);
         // CRC-16-CCITT with init 0xFFFF for "123456789" should be 0x29B1
         assert_eq!(crc, 0x29B1);
     }
@@ -664,8 +825,8 @@ mod tests {
     #[test]
     fn test_crc16c_deterministic() {
         let data = [0x01, 0x02, 0x03, 0x04, 0x05];
-        let crc1 = crc16c(&data);
-        let crc2 = crc16c(&data);
+        let crc1 = checksum16(&data);
+        let crc2 = checksum16(&data);
         assert_eq!(crc1, crc2);
     }
 
@@ -673,8 +834,8 @@ mod tests {
     fn test_crc16c_sensitivity() {
         let data1 = [0x01, 0x02, 0x03];
         let data2 = [0x01, 0x02, 0x04];
-        let crc1 = crc16c(&data1);
-        let crc2 = crc16c(&data2);
+        let crc1 = checksum16(&data1);
+        let crc2 = checksum16(&data2);
         assert_ne!(crc1, crc2);
     }
 }
