@@ -150,7 +150,7 @@ pub const RADIO_MAX_MESSAGE_SIZE: usize = 2013;
 ///
 /// Calculated via ceiling division to ensure we can accommodate RADIO_MAX_MESSAGE_SIZE.
 /// **Compatibility critical**: Derived from RADIO_PACKET_SIZE and RADIO_MAX_MESSAGE_SIZE.
-pub const RADIO_MAX_PACKET_COUNT: usize = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE;
+pub const RADIO_MAX_PACKET_COUNT: usize = RADIO_MAX_MESSAGE_SIZE.div_ceil(RADIO_PACKET_SIZE);
 
 /// Compile-time assertion that packet count fits in a u8
 const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");
@@ -738,6 +738,12 @@ pub struct RadioCommunicationManager {
 
 //TODO: generic Constant Params and consolidate new and initialize methods
 
+impl Default for RadioCommunicationManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RadioCommunicationManager {
     /// Creates a new uninitialized RadioCommunicationManager
     ///
@@ -849,7 +855,7 @@ impl RadioCommunicationManager {
 
         let process_result_queue_temp: ProcessResultQueue = Channel::new();
         let process_result_queue_static: &'static ProcessResultQueue = Box::leak(Box::new(process_result_queue_temp));
-        return self.initialize_common(
+        self.initialize_common(
             radio_config,
             spawner,
             radio_device,
@@ -861,7 +867,7 @@ impl RadioCommunicationManager {
             rx_state_queue_static,
             own_node_id,
             rng_seed,
-        );
+        )
     }
 
     /// Common initialization logic shared between embedded and std features
@@ -1043,7 +1049,7 @@ impl RadioCommunicationManager {
                 ..
             } => incoming_message_queue_receiver,
         };
-        return Ok(incoming_message_queue_receiver.receive().await);
+        Ok(incoming_message_queue_receiver.receive().await)
     }
 
     /// Reports the result of processing a received message
@@ -1457,7 +1463,7 @@ mod tests {
 
     #[test]
     fn test_radio_max_packet_count_constant() {
-        let expected = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE;
+        let expected = RADIO_MAX_MESSAGE_SIZE.div_ceil(RADIO_PACKET_SIZE);
         assert_eq!(RADIO_MAX_PACKET_COUNT, expected);
     }
 

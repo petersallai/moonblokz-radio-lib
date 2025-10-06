@@ -110,7 +110,7 @@ const DIRTY_SHIFT: u8 = 6;
 
 ///check to ensure MAX_DIRTY_COUNT fits within the dirty bits
 const _: () = assert!(
-    MAX_DIRTY_COUNT <= ((DIRTY_MASK >> DIRTY_SHIFT) as u8),
+    MAX_DIRTY_COUNT <= (DIRTY_MASK >> DIRTY_SHIFT),
     "MAX_DIRTY_COUNT exceeds dirty bits capacity"
 );
 
@@ -291,7 +291,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         };
         result.connection_matrix_nodes[0] = own_node_id; // Initialize the first node as own_node_id
         result.connection_matrix[0][0] = 63; // Self-connection with max quality
-        return result;
+        result
     }
 
     /// Calculates the next timeout instant for timed tasks
@@ -320,7 +320,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 min_timeout = min(min_timeout, item.send_time);
             }
         }
-        return min_timeout;
+        min_timeout
     }
 
     /// Adds an echo response to the wait pool with random delay
@@ -426,16 +426,11 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 let receive_link_matrix_item = self.connection_matrix[i][0]; // Get the link quality from the connection matrix
                 let send_link_quality = send_link_matrix_item & QUALITY_MASK; // Get the link quality from the connection matrix
                 let receive_link_quality = receive_link_matrix_item & QUALITY_MASK; // Get the link quality from the connection matrix
-                if (send_link_matrix_item & DIRTY_MASK == 0 || receive_link_matrix_item & DIRTY_MASK == 0)
-                    && (send_link_quality != 0 || receive_link_quality != 0)
-                {
-                    if echo_result
+                if (send_link_matrix_item & DIRTY_MASK == 0 || receive_link_matrix_item & DIRTY_MASK == 0) && (send_link_quality != 0 || receive_link_quality != 0) && echo_result
                         .add_echo_result_item(neighbor_node, send_link_quality, receive_link_quality)
-                        .is_err()
-                    {
-                        log::warn!("Echo result message full, cannot add more items");
-                        break;
-                    }
+                        .is_err() {
+                    log::warn!("Echo result message full, cannot add more items");
+                    break;
                 }
             }
             return RelayResult::SendMessage(echo_result);
@@ -461,7 +456,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             }
         }
 
-        return RelayResult::None;
+        RelayResult::None
     }
 
     /// Updates connection matrix based on received radio packet
@@ -552,7 +547,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     // Notify wait pool that a connection matrix item has changed
                     self.wait_pool.connection_matrix_item_changed(lowest_quality_index);
                     self.connection_matrix_nodes[lowest_quality_index] = message.sender_node_id();
-                    self.connection_matrix[lowest_quality_index] = empty_connections().clone();
+                    self.connection_matrix[lowest_quality_index] = empty_connections();
                     self.connection_matrix[lowest_quality_index][lowest_quality_index] = 63;
                 }
             }
@@ -638,24 +633,20 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             }
         }
 
-        if message.message_type() == MessageType::AddBlock as u8
+        if (message.message_type() == MessageType::AddBlock as u8
             || message.message_type() == MessageType::AddTransaction as u8
             || message.message_type() == MessageType::Support as u8
-            || message.message_type() == MessageType::RequestFullBlock as u8
-            || message.message_type() == MessageType::RequestNewMempoolItem as u8
-        {
-            if self.wait_pool.contains_message_or_reply(message) {
-                self.wait_pool.update_message(
-                    message,
-                    &self.connection_matrix,
-                    &self.connection_matrix[0],
-                    &self.connection_matrix[sender_index],
-                );
-                return RelayResult::AlreadyHaveMessage;
-            }
+            || message.message_type() == MessageType::RequestFullBlock as u8 || message.message_type() == MessageType::RequestNewMempoolItem as u8) && self.wait_pool.contains_message_or_reply(message) {
+            self.wait_pool.update_message(
+                message,
+                &self.connection_matrix,
+                &self.connection_matrix[0],
+                &self.connection_matrix[sender_index],
+            );
+            return RelayResult::AlreadyHaveMessage;
         }
 
-        return RelayResult::None;
+        RelayResult::None
     }
 
     /// Processes message handling results from application layer

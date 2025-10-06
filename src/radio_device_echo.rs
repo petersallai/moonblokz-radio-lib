@@ -104,6 +104,12 @@ pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver
 /// ```
 pub struct RadioDevice {}
 
+impl Default for RadioDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RadioDevice {
     /// Creates a new echo radio device
     ///

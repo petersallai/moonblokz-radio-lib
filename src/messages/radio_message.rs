@@ -723,14 +723,14 @@ impl RadioMessage {
             if payload_length == 0 {
                 return 0;
             }
-            let packet_count = core::cmp::min(
+            
+            core::cmp::min(
                 (payload_length + RADIO_PACKET_SIZE - (RADIO_MULTI_PACKET_PACKET_HEADER_SIZE + 1))
                     / (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE),
                 RADIO_MAX_PACKET_COUNT,
-            );
-            return packet_count;
+            )
         } else {
-            return 1;
+            1
         }
     }
 
@@ -754,7 +754,7 @@ impl RadioMessage {
                 }
             }
         }
-        return packet_count;
+        packet_count
     }
 
     /// Constructs a single packet from a multi-packet message (internal use)
@@ -1018,7 +1018,7 @@ impl RadioMessage {
             }
         }
         // For other message types, we do not consider them as replies
-        return false;
+        false
     }
 
     /// Returns an iterator over mempool data entries (internal use)

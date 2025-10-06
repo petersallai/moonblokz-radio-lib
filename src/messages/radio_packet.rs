@@ -93,9 +93,9 @@ impl RadioPacket {
             if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet count
             }
-            return self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
+            self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
         } else {
-            return 1; // For other message types, always 1 packet
+            1// For other message types, always 1 packet
         }
     }
 
@@ -166,9 +166,9 @@ impl RadioPacket {
             if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet index
             }
-            return self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1];
+            self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1]
         } else {
-            return 0; // For other message types, always 0
+            0// For other message types, always 0
         }
     }
 
@@ -192,13 +192,9 @@ impl RadioPacket {
                 return false;
             }
 
-            if self.data[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] == other_header[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] {
-                return true;
-            } else {
-                return false;
-            }
+            self.data[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] == other_header[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
         } else {
-            return false;
+            false
         }
     }
 }

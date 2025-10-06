@@ -268,7 +268,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     pub(crate) fn contains_message_or_reply(&self, message: &RadioMessage) -> bool {
         self.items
             .iter()
-            .any(|item| item.as_ref().map_or(false, |i| &i.message == message || i.message.is_reply_to(message)))
+            .any(|item| item.as_ref().is_some_and(|i| &i.message == message || i.message.is_reply_to(message)))
     }
 
     /// Updates an existing message's network topology and recalculates activation time
@@ -325,7 +325,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                 }
             }
         }
-        return false;
+        false
     }
 
     /// Adds a new message to the pool or updates it if already present
@@ -380,10 +380,10 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
         //create a new item
         let mut new_item = WaitPoolItem {
-            message: message,
+            message,
             activation_time: Instant::now(),
             message_connections: [0; crate::CONNECTION_MATRIX_SIZE],
-            requestor_index: requestor_index,
+            requestor_index,
         };
 
         for i in 0..CONNECTION_MATRIX_SIZE {
@@ -463,29 +463,25 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         if let (Some(packet_sequence), Some(packet_payload_checksum)) = (packet.sequence(), packet.payload_checksum()) {
             for item_opt in self.items.iter_mut() {
                 if let Some(item) = item_opt {
-                    if item.requestor_index.is_some() {
-                        if item.message.message_type() == packet.message_type() {
-                            if let (Some(message_sequence), Some(message_payload_checksum)) = (item.message.sequence(), item.message.payload_checksum()) {
-                                if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
-                                    if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
-                                        for i in 0..CONNECTION_MATRIX_SIZE {
-                                            item.message_connections[i] = max(item.message_connections[i], sender_connections[i] & QUALITY_MASK);
-                                        }
-
-                                        if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                                            //  log!(log::Level::Debug, "Message removed from wait pool");
-                                            *item_opt = None;
-                                            return;
-                                        }
-                                        let position =
-                                            item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
-
-                                        item.activation_time = Instant::now()
-                                            + Duration::from_secs(position * self.relay_position_delay)
-                                            + Duration::from_millis(self.rng.next_u64() % 300);
-                                        return;
-                                    }
+                    if item.requestor_index.is_some() && item.message.message_type() == packet.message_type() {
+                        if let (Some(message_sequence), Some(message_payload_checksum)) = (item.message.sequence(), item.message.payload_checksum()) {
+                            if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum && message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
+                                for i in 0..CONNECTION_MATRIX_SIZE {
+                                    item.message_connections[i] = max(item.message_connections[i], sender_connections[i] & QUALITY_MASK);
                                 }
+
+                                if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
+                                    //  log!(log::Level::Debug, "Message removed from wait pool");
+                                    *item_opt = None;
+                                    return;
+                                }
+                                let position =
+                                    item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
+
+                                item.activation_time = Instant::now()
+                                    + Duration::from_secs(position * self.relay_position_delay)
+                                    + Duration::from_millis(self.rng.next_u64() % 300);
+                                return;
                             }
                         }
                     }
@@ -539,7 +535,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                 }
             }
         }
-        return None;
+        None
     }
 
     /// Updates the pool when a connection matrix entry changes
