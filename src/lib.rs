@@ -39,6 +39,13 @@
 //! The MoonBlokz Radio Library is not implement any security features such as encryption or authentication,
 //! because it is designed as a communication layer for a blockchain network. All authorization and integrity
 //! checks are performed by the higher-level blockchain protocols.
+//!
+//! ## Reliability
+//!
+//! The library not handles retransmission of lost packets - this is managed by the higher-level blockchain protocol.
+//! Also the protocol not depends on acknowledgments or handshakes to confirm receipt of messages. The network layer mostly
+//! delivers messages to all nodes and the higher-level protocols handles the rare exceptions. Using this approach
+//! minimizes radio traffic and maximizes network efficiency, which is critical on the LoRa networks.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(async_fn_in_trait)]
@@ -50,11 +57,24 @@
 ))]
 compile_error!("Only one radio implementation feature can be enabled at a time");
 
+#[cfg(any(
+    all(feature = "memory-config-small", any(feature = "memory-config-medium", feature = "memory-config-large")),
+    all(feature = "memory-config-medium", any(feature = "memory-config-small", feature = "memory-config-large")),
+    all(feature = "memory-config-large", any(feature = "memory-config-small", feature = "memory-config-medium")),
+))]
+compile_error!("Only one memory configuration feature can be enabled at a time");
+
 #[cfg(all(
     not(test),
     not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262", feature = "radio-device-simulator"))
 ))]
 compile_error!("At least one radio implementation feature must be enabled");
+
+#[cfg(all(
+    not(test),
+    not(any(feature = "memory-config-small", feature = "memory-config-medium", feature = "memory-config-large"))
+))]
+compile_error!("At least one memory configuration feature must be enabled");
 
 #[cfg(feature = "radio-device-lora-sx1262")]
 pub mod radio_device_lora_sx1262;
@@ -140,30 +160,68 @@ const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT mus
 
 /// Size of the connection quality matrix (NxN grid for node connections)
 ///
-/// Tracks link quality between up to 100 different node pairs.
+#[cfg(feature = "memory-config-small")]
+const CONNECTION_MATRIX_SIZE: usize = 10;
+
+#[cfg(feature = "memory-config-medium")]
+const CONNECTION_MATRIX_SIZE: usize = 30;
+
+#[cfg(feature = "memory-config-large")]
 const CONNECTION_MATRIX_SIZE: usize = 100;
 
 /// Size of the buffer for incoming packets awaiting assembly
 ///
 /// Larger values allow more concurrent multi-packet message reconstructions
 /// but consume more memory.
+
+#[cfg(feature = "memory-config-small")]
+const INCOMING_PACKET_BUFFER_SIZE: usize = 20;
+
+#[cfg(feature = "memory-config-medium")]
+const INCOMING_PACKET_BUFFER_SIZE: usize = 30;
+
+#[cfg(feature = "memory-config-large")]
 const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 
 /// Number of messages that can wait for relay decisions simultaneously
 ///
 /// Messages awaiting relay scoring and transmission scheduling are queued here.
+
+#[cfg(feature = "memory-config-small")]
+const WAIT_POOL_SIZE: usize = 5;
+
+#[cfg(feature = "memory-config-medium")]
 const WAIT_POOL_SIZE: usize = 10;
+
+#[cfg(feature = "memory-config-large")]
+const WAIT_POOL_SIZE: usize = 20;
 
 /// Number of concurrent echo response collections that can be tracked
 ///
 /// Echo protocol responses are buffered here during the gathering phase.
+
+#[cfg(feature = "memory-config-small")]
+const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 3;
+
+#[cfg(feature = "memory-config-medium")]
+const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 5;
+
+#[cfg(feature = "memory-config-large")]
 const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 10;
 
 /// Size of the duplicate detection cache for received messages
 ///
 /// Prevents reprocessing of messages already seen. Larger values improve
 /// duplicate detection at the cost of memory.
+
+#[cfg(feature = "memory-config-small")]
 const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 10;
+
+#[cfg(feature = "memory-config-medium")]
+const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 20;
+
+#[cfg(feature = "memory-config-large")]
+const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 30;
 
 /// Maximum number of concurrent nodes supported in the network
 ///
@@ -196,6 +254,7 @@ pub const MAX_NODE_COUNT: usize = 1;
 ///     relay_position_delay: 10,             // 10 second delay for relay scoring
 ///     scoring_matrix: ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]),
 ///     retry_interval_for_missing_packets: 60, // Retry missing packets after 60 seconds
+///    tx_maximum_random_delay: 200,        // Up to 200ms random delay
 /// };
 /// ```
 pub struct RadioConfiguration {
@@ -243,9 +302,13 @@ pub struct RadioConfiguration {
     /// When packets are lost during transmission, this controls how often to request
     /// retransmission from the sender.
     pub retry_interval_for_missing_packets: u8,
+
+    /// Maximum random delay in milliseconds added to transmission timing
+    pub tx_maximum_random_delay: u16,
 }
 
 /// Error returned when attempting to send a message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendMessageError {
     /// The outgoing message queue is full, cannot accept more messages
     ChannelFull,
@@ -254,11 +317,35 @@ pub enum SendMessageError {
     NotInited,
 }
 
+#[cfg(feature = "std")]
+impl std::fmt::Display for SendMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendMessageError::ChannelFull => write!(f, "outgoing message queue is full"),
+            SendMessageError::NotInited => write!(f, "RadioCommunicationManager not initialized"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SendMessageError {}
+
 /// Error returned when attempting to receive a message
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveMessageError {
     /// The RadioCommunicationManager has not been initialized yet
     NotInited,
 }
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for ReceiveMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RadioCommunicationManager not initialized")
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ReceiveMessageError {}
 
 /// Size of the outgoing message queue
 ///
@@ -411,7 +498,7 @@ static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 pub struct ScoringMatrix {
     /// 4x4 matrix of relay scores
     ///
-    /// Only the upper triangle is used (matrix[row][col] where col > row).
+    /// Only the upper triangle is used (`matrix[row][col]` where `col > row`).
     /// Values are 0-15 (4-bit scores).
     pub matrix: [[u8; 4]; 4],
 
@@ -464,8 +551,8 @@ impl ScoringMatrix {
     /// Byte 4: [excellent_limit bits 3-0: 4 bits][relay_score_limit: 4 bits]
     /// ```
     ///
-    /// Where B1 = matrix[0][1], C1 = matrix[0][2], D1 = matrix[0][3],
-    /// C2 = matrix[1][2], D2 = matrix[1][3], D3 = matrix[2][3]
+    /// Where `B1 = matrix[0][1]`, `C1 = matrix[0][2]`, `D1 = matrix[0][3]`,
+    /// `C2 = matrix[1][2]`, `D2 = matrix[1][3]`, `D3 = matrix[2][3]`
     ///
     /// # Arguments
     /// * `encoded` - 5-byte array containing the packed matrix and limits
@@ -827,6 +914,7 @@ impl RadioCommunicationManager {
             relay_position_delay,
             scoring_matrix,
             retry_interval_for_missing_packets,
+            tx_maximum_random_delay,
         } = radio_config;
 
         // Spawn the radio task
@@ -847,6 +935,7 @@ impl RadioCommunicationManager {
             tx_packet_queue.sender(),
             delay_between_tx_packets,
             delay_between_tx_messages,
+            tx_maximum_random_delay,
             rng.next_u64(),
         ));
         if tx_scheduler_task_result.is_err() {
@@ -1138,6 +1227,7 @@ mod tests {
             relay_position_delay: 10,
             scoring_matrix: ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 82u8, 143u8]),
             retry_interval_for_missing_packets: 60,
+            tx_maximum_random_delay: 200,
         };
     }
 
@@ -1201,5 +1291,245 @@ mod tests {
         assert_eq!(sm.matrix[1][2], 3);
         assert_eq!(sm.matrix[1][3], 4);
         assert_eq!(sm.matrix[2][3], 1);
+    }
+
+    // ============================================================================
+    // Link Quality Calculation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_normalize_within_bounds() {
+        let rssi = -75i16;
+        let quality = normalize(rssi, -120, -30);
+        assert!(quality > 0 && quality < 63);
+        assert!(quality > 20 && quality < 50);
+    }
+
+    #[test]
+    fn test_normalize_below_minimum() {
+        let quality = normalize(-150, -120, -30);
+        assert_eq!(quality, 0);
+    }
+
+    #[test]
+    fn test_normalize_above_maximum() {
+        let quality = normalize(-20, -120, -30);
+        assert_eq!(quality, 63);
+    }
+
+    #[test]
+    fn test_calculate_link_quality_strong_signal() {
+        let quality = calculate_link_quality(-40, 8);
+        assert!(quality > 50);
+    }
+
+    #[test]
+    fn test_calculate_link_quality_weak_signal() {
+        let quality = calculate_link_quality(-115, -18);
+        assert!(quality < 15);
+    }
+
+    #[test]
+    fn test_calculate_link_quality_deterministic() {
+        let q1 = calculate_link_quality(-80, 0);
+        let q2 = calculate_link_quality(-80, 0);
+        assert_eq!(q1, q2);
+    }
+
+    #[test]
+    fn test_rssi_snr_extreme_values() {
+        let q1 = calculate_link_quality(i16::MIN, i16::MIN);
+        assert_eq!(q1, 0);
+
+        let q2 = calculate_link_quality(i16::MAX, i16::MAX);
+        assert_eq!(q2, 63);
+    }
+
+    // ============================================================================
+    // Scoring Matrix Tests
+    // ============================================================================
+
+    #[test]
+    fn test_scoring_matrix_creation() {
+        let matrix = ScoringMatrix::new([[0, 15, 15, 15], [0, 0, 3, 4], [0, 0, 0, 1], [0, 0, 0, 0]], 20, 40, 15);
+
+        assert_eq!(matrix.poor_limit, 20);
+        assert_eq!(matrix.excellent_limit, 40);
+        assert_eq!(matrix.relay_score_limit, 15);
+        assert_eq!(matrix.matrix[0][1], 15);
+        assert_eq!(matrix.matrix[1][2], 3);
+    }
+
+    #[test]
+    fn test_scoring_matrix_symmetry() {
+        let matrix = ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 82u8, 143u8]);
+
+        // Lower triangle should be 0 by convention
+        assert_eq!(matrix.matrix[1][0], 0);
+        assert_eq!(matrix.matrix[2][0], 0);
+        assert_eq!(matrix.matrix[2][1], 0);
+        assert_eq!(matrix.matrix[3][0], 0);
+        assert_eq!(matrix.matrix[3][1], 0);
+        assert_eq!(matrix.matrix[3][2], 0);
+    }
+
+    // ============================================================================
+    // Message Tests
+    // ============================================================================
+
+    #[test]
+    fn test_message_types_are_distinct() {
+        let types = [
+            MessageType::RequestEcho as u8,
+            MessageType::Echo as u8,
+            MessageType::EchoResult as u8,
+            MessageType::RequestFullBlock as u8,
+            MessageType::RequestBlockPart as u8,
+            MessageType::AddBlock as u8,
+            MessageType::AddTransaction as u8,
+            MessageType::RequestNewMempoolItem as u8,
+            MessageType::Support as u8,
+        ];
+
+        for (i, &type1) in types.iter().enumerate() {
+            for &type2 in types.iter().skip(i + 1) {
+                assert_ne!(type1, type2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let msg1 = RadioMessage::new_request_echo(123);
+        let msg2 = msg1.clone();
+
+        assert_eq!(msg1.sender_node_id(), msg2.sender_node_id());
+        assert_eq!(msg1.message_type(), msg2.message_type());
+    }
+
+    #[test]
+    fn test_empty_message_payload() {
+        let msg = RadioMessage::new_add_block(1, 0, &[]);
+        // Message length includes header (13 bytes: type + sender_id + sequence)
+        // so empty payload still has header
+        assert!(msg.length() >= 13);
+    }
+
+    #[test]
+    fn test_node_id_zero() {
+        let msg = RadioMessage::new_request_echo(0);
+        assert_eq!(msg.sender_node_id(), 0);
+    }
+
+    #[test]
+    fn test_sequence_number_wraparound() {
+        let max_seq = u32::MAX;
+        let msg = RadioMessage::new_add_block(1, max_seq, &[1, 2, 3]);
+        assert_eq!(msg.sequence(), Some(max_seq));
+    }
+
+    #[test]
+    fn test_large_payload_handling() {
+        // Create message with maximum payload size minus headers
+        let payload_size = RADIO_MAX_MESSAGE_SIZE - 13; // Account for header
+        let large_payload = vec![0xAAu8; payload_size];
+        let msg = RadioMessage::new_add_block(1, 100, &large_payload);
+        assert!(msg.length() <= RADIO_MAX_MESSAGE_SIZE);
+        assert!(msg.length() > payload_size); // Should include headers
+    }
+
+    // ============================================================================
+    // Constants Validation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_radio_packet_size_constant() {
+        assert_eq!(RADIO_PACKET_SIZE, 215);
+        assert!(RADIO_PACKET_SIZE > 50);
+        assert!(RADIO_PACKET_SIZE < 1024);
+    }
+
+    #[test]
+    fn test_radio_max_message_size_constant() {
+        assert_eq!(RADIO_MAX_MESSAGE_SIZE, 2013);
+        assert!(RADIO_MAX_MESSAGE_SIZE > RADIO_PACKET_SIZE);
+    }
+
+    #[test]
+    fn test_radio_max_packet_count_constant() {
+        let expected = (RADIO_MAX_MESSAGE_SIZE + RADIO_PACKET_SIZE - 1) / RADIO_PACKET_SIZE;
+        assert_eq!(RADIO_MAX_PACKET_COUNT, expected);
+    }
+
+    #[test]
+    fn test_max_packet_count_fits_in_u8() {
+        assert!(RADIO_MAX_PACKET_COUNT <= 255);
+    }
+
+    #[test]
+    fn test_connection_matrix_size_constant() {
+        assert_eq!(CONNECTION_MATRIX_SIZE, 100);
+    }
+
+    // ============================================================================
+    // CRC and Integrity Tests
+    // ============================================================================
+
+    #[test]
+    fn test_payload_checksum_consistency() {
+        let payload = [1u8, 2, 3, 4, 5];
+        let msg1 = RadioMessage::new_add_block(1, 100, &payload);
+        let msg2 = RadioMessage::new_add_block(1, 100, &payload);
+
+        assert_eq!(msg1.payload_checksum(), msg2.payload_checksum());
+    }
+
+    #[test]
+    fn test_payload_checksum_sensitivity() {
+        let payload1 = [1u8, 2, 3, 4, 5];
+        let payload2 = [1u8, 2, 3, 4, 6];
+
+        let msg1 = RadioMessage::new_add_block(1, 100, &payload1);
+        let msg2 = RadioMessage::new_add_block(1, 100, &payload2);
+
+        assert_ne!(msg1.payload_checksum(), msg2.payload_checksum());
+    }
+
+    // ============================================================================
+    // Error Type Tests
+    // ============================================================================
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_error_types_implement_std_error() {
+        // Test SendMessageError
+        let send_err1 = SendMessageError::ChannelFull;
+        let send_err2 = SendMessageError::NotInited;
+
+        // Verify Display implementation
+        assert_eq!(format!("{}", send_err1), "outgoing message queue is full");
+        assert_eq!(format!("{}", send_err2), "RadioCommunicationManager not initialized");
+
+        // Verify std::error::Error trait is implemented
+        let _: &dyn std::error::Error = &send_err1;
+        let _: &dyn std::error::Error = &send_err2;
+
+        // Test ReceiveMessageError
+        let recv_err = ReceiveMessageError::NotInited;
+        assert_eq!(format!("{}", recv_err), "RadioCommunicationManager not initialized");
+        let _: &dyn std::error::Error = &recv_err;
+    }
+
+    #[test]
+    fn test_error_types_are_debug_and_copy() {
+        // Test SendMessageError
+        let send_err = SendMessageError::ChannelFull;
+        let _send_err_copy = send_err; // Test Copy
+        let _send_err_debug = format!("{:?}", send_err); // Test Debug
+
+        // Test ReceiveMessageError
+        let recv_err = ReceiveMessageError::NotInited;
+        let _recv_err_copy = recv_err; // Test Copy
+        let _recv_err_debug = format!("{:?}", recv_err); // Test Debug
     }
 }

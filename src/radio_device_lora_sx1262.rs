@@ -141,6 +141,7 @@ const CAD_TIMEOUT_MS: u64 = 1000;
 ///
 /// Represents specific errors that can occur during radio device initialization.
 /// These provide more granular error information than the generic `InitializationFailed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RadioDeviceInitError {
     /// Failed to create the SX126x interface variant
     InterfaceError,
@@ -154,11 +155,28 @@ pub enum RadioDeviceInitError {
     RXPacketParamsError,
 }
 
+#[cfg(feature = "std")]
+impl std::fmt::Display for RadioDeviceInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RadioDeviceInitError::InterfaceError => write!(f, "failed to create SX126x interface variant"),
+            RadioDeviceInitError::LoraError => write!(f, "failed to initialize LoRa PHY layer"),
+            RadioDeviceInitError::ModulationParamsError => write!(f, "failed to create modulation parameters"),
+            RadioDeviceInitError::TXPacketParamsError => write!(f, "failed to create TX packet parameters"),
+            RadioDeviceInitError::RXPacketParamsError => write!(f, "failed to create RX packet parameters"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for RadioDeviceInitError {}
+
 /// Internal radio device errors
 ///
 /// These errors represent failures during radio operations. Unlike
 /// `RadioDeviceInitError`, these occur during runtime operation rather
 /// than initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RadioDeviceError {
     /// Device was not initialized before attempting an operation
     InitializationFailed,
@@ -171,6 +189,22 @@ enum RadioDeviceError {
     /// Received packet failed CRC verification (soft-packet-crc feature)
     CRCMismatch,
 }
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for RadioDeviceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RadioDeviceError::InitializationFailed => write!(f, "device not initialized"),
+            RadioDeviceError::TransmissionFailed => write!(f, "packet transmission failed"),
+            RadioDeviceError::ReceiveFailed => write!(f, "packet reception failed"),
+            RadioDeviceError::CADFailed => write!(f, "channel activity detection failed"),
+            RadioDeviceError::CRCMismatch => write!(f, "packet CRC verification failed"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for RadioDeviceError {}
 
 /// Calculate CRC-16-CCITT for packet integrity checking
 ///
@@ -837,5 +871,39 @@ mod tests {
         let crc1 = checksum16(&data1);
         let crc2 = checksum16(&data2);
         assert_ne!(crc1, crc2);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_radio_device_init_error_implements_std_error() {
+        // Test all RadioDeviceInitError variants
+        let errors = [
+            RadioDeviceInitError::InterfaceError,
+            RadioDeviceInitError::LoraError,
+            RadioDeviceInitError::ModulationParamsError,
+            RadioDeviceInitError::TXPacketParamsError,
+            RadioDeviceInitError::RXPacketParamsError,
+        ];
+
+        for err in &errors {
+            // Verify Display implementation
+            let display_str = format!("{}", err);
+            assert!(!display_str.is_empty());
+
+            // Verify std::error::Error trait is implemented
+            let _: &dyn std::error::Error = err;
+        }
+
+        // Test specific messages
+        assert_eq!(format!("{}", RadioDeviceInitError::InterfaceError), "failed to create SX126x interface variant");
+        assert_eq!(format!("{}", RadioDeviceInitError::LoraError), "failed to initialize LoRa PHY layer");
+    }
+
+    #[test]
+    fn test_error_types_are_debug_and_copy() {
+        // Test RadioDeviceInitError
+        let init_err = RadioDeviceInitError::InterfaceError;
+        let _init_err_copy = init_err; // Test Copy
+        let _init_err_debug = format!("{:?}", init_err); // Test Debug
     }
 }

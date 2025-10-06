@@ -13,9 +13,7 @@
   - Log important messages to create visualization
 - Memory management:
   - Profile memory usage
-  - Create features for different memory setups
 - Constructor review
-- AI code review
 
 ## Implement this functions during blockchain development
 

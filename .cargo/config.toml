@@ -1,0 +1,7 @@
+# Cargo configuration for moonblokz-radio-lib
+
+[alias]
+# Convenient aliases to run tests with correct features
+# Tests require a radio device feature and a memory config feature
+test-echo = "test --lib --no-default-features --features std,radio-device-echo,memory-config-large"
+test-all = "test --lib --no-default-features --features std,radio-device-echo,memory-config-large"

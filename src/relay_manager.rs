@@ -862,4 +862,59 @@ mod tests {
             other => panic!("Expected AlreadyHaveMessage, got: {:?}", core::mem::discriminant(&other)),
         }
     }
+
+    // ============================================================================
+    // Connection Matrix Type Alias Tests
+    // ============================================================================
+
+    #[test]
+    fn test_connection_matrix_initialization() {
+        let matrix: ConnectionMatrix = [[0; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+
+        assert_eq!(matrix.len(), crate::CONNECTION_MATRIX_SIZE);
+        assert_eq!(matrix[0].len(), crate::CONNECTION_MATRIX_SIZE);
+
+        for row in matrix.iter() {
+            for &cell in row.iter() {
+                assert_eq!(cell, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_connection_matrix_row_type() {
+        let matrix: ConnectionMatrix = [[42; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+        let row: &ConnectionMatrixRow = &matrix[0];
+
+        assert_eq!(row.len(), crate::CONNECTION_MATRIX_SIZE);
+        assert_eq!(row[0], 42);
+        assert_eq!(row[crate::CONNECTION_MATRIX_SIZE - 1], 42);
+    }
+
+    #[test]
+    fn test_connection_matrix_quality_and_dirty_bits() {
+        let mut matrix: ConnectionMatrix = [[0; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+
+        const QUALITY_MASK: u8 = 0b0011_1111;
+        const DIRTY_MASK: u8 = 0b1100_0000;
+        const DIRTY_SHIFT: u8 = 6;
+
+        let quality = 45u8;
+        let dirty = 2u8;
+        matrix[0][1] = (dirty << DIRTY_SHIFT) | quality;
+
+        assert_eq!(matrix[0][1] & QUALITY_MASK, quality);
+        assert_eq!((matrix[0][1] & DIRTY_MASK) >> DIRTY_SHIFT, dirty);
+    }
+
+    #[test]
+    fn test_connection_matrix_full_size() {
+        let matrix: ConnectionMatrix = [[255; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+
+        for i in 0..crate::CONNECTION_MATRIX_SIZE {
+            for j in 0..crate::CONNECTION_MATRIX_SIZE {
+                assert_eq!(matrix[i][j], 255);
+            }
+        }
+    }
 }

@@ -11,19 +11,26 @@ embassy-futures = { version = "0.1"}
 
 embassy-rp = { version = "0.8",features = ["unstable-pac", "time-driver", "critical-section-impl", "rp2040"],optional = true }
 embedded-hal-bus = { version = "0.3", features = ["async"],optional = true}
-#embedded-hal-async = {version="1.0.0",optional = true}
-#lora-phy = {version="3.0.1",optional = true}
 lora-phy = { git = "https://github.com/lora-rs/lora-rs.git", default-features = false, optional = true}
 
-#static_cell = "2"
 log = {version="0.4"}
 rand_core = { version = "0.9", default-features = false}
 rand-wyrand = {version="0.3.0", default-features = false}
 critical-section = { version = "1.2.0", features = ["std"],optional = true}
 
 [features]
+# Different memory configurations for embedded devices with varying RAM sizes.
+memory-config-small = []
+memory-config-medium = []
+memory-config-large = []
+
+#Enables packet level software CRC checking (16 bit) in radio module.
 soft-packet-crc = []
-default = ["radio-device-lora-sx1262"]
+
+#Default to echo device for easy testing
+default = ["radio-device-echo","memory-config-large"]
+
+#Feature sets for different environments. To run on computers, the std feature set must be used, elsewhere many dependencies will not compile (for example critical-sections).
 std=["embassy-executor/arch-std","embassy-executor/executor-thread","embassy-time/std","embassy-sync/std","critical-section/std"]
 embedded=["embassy-executor/executor-thread","embassy-executor/arch-cortex-m","embassy-executor/executor-interrupt","dep:embassy-rp","dep:embedded-hal-bus","dep:lora-phy"]
 radio-device-echo = ["std"]
@@ -33,4 +40,5 @@ radio-device-simulator = ["std"]
 [dev-dependencies]
 futures = "0.3"
 
-
+[profile.test]
+opt-level = 0

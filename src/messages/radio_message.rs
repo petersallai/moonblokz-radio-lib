@@ -212,14 +212,21 @@ impl RadioMessage {
     ///
     /// # Arguments
     /// * `packet` - The packet to add to this message
+    ///
+    /// # Safety
+    /// Includes bounds checking to prevent buffer overflows. Silently ignores
+    /// packets that would exceed the payload buffer.
     pub(crate) fn add_packet(&mut self, packet: &RadioPacket) {
         let total_packet_count = packet.total_packet_count();
         if total_packet_count == (packet.packet_index() + 1) {
             self.payload[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE].copy_from_slice(&packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
-            self.length = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+            let calculated_length = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
                 + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) * (total_packet_count as usize - 1)
                 + packet.length
                 - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE;
+
+            // Bounds check: ensure calculated length doesn't exceed payload buffer
+            self.length = calculated_length.min(RADIO_MAX_MESSAGE_SIZE);
         }
 
         let start_index = RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) * packet.packet_index() as usize;
@@ -228,7 +235,18 @@ impl RadioMessage {
             false => start_index + (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE),
         };
 
-        self.payload[start_index..end_index].copy_from_slice(&packet.data[RADIO_MULTI_PACKET_PACKET_HEADER_SIZE..packet.length]);
+        // Bounds check: ensure indices don't exceed payload buffer
+        if end_index > self.payload.len() || start_index >= self.payload.len() {
+            return; // Silently ignore out-of-bounds packets
+        }
+
+        // Bounds check: ensure we don't read past packet data
+        let packet_data_end = packet.length.min(packet.data.len());
+        if RADIO_MULTI_PACKET_PACKET_HEADER_SIZE > packet_data_end {
+            return; // Invalid packet header size
+        }
+
+        self.payload[start_index..end_index].copy_from_slice(&packet.data[RADIO_MULTI_PACKET_PACKET_HEADER_SIZE..packet_data_end]);
     }
 
     /// Creates a new RequestEcho message
@@ -377,6 +395,23 @@ impl RadioMessage {
         Ok(())
     }
 
+    /// Creates a new RequestBlockPart message (internal use)
+    ///
+    /// Requests specific missing packets from a multi-packet message. This is used
+    /// when some packets of a block were received but others are missing, allowing
+    /// efficient retransmission of only the needed packets.
+    ///
+    /// # Arguments
+    /// * `node_id` - The requesting node's unique identifier
+    /// * `sequence` - Sequence number of the block being requested
+    /// * `payload_checksum` - CRC32C checksum of the complete block payload
+    ///
+    /// # Returns
+    /// A RadioMessage configured as a RequestBlockPart (initially with no packet indices)
+    ///
+    /// # Note
+    /// Use `add_packet_index_to_request_block_part()` to add specific packet indices
+    /// to request after creating this message.
     pub(crate) fn new_request_block_part(node_id: u32, sequence: u32, payload_checksum: u32) -> Self {
         // Create a new RadioMessage with a specific message type for block part requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
@@ -571,7 +606,7 @@ impl RadioMessage {
     /// # Example
     /// ```
     /// let mut message = RadioMessage::new_get_mempool_state(1);
-    /// message.add_mempool_item(100, 0x12345678).unwrap();
+    /// message.add_mempool_item(100, 0x12345678)
     /// ```
     pub fn new_get_mempool_state(node_id: u32) -> Self {
         // Create a new RadioMessage with a specific message type for getting mempool state
@@ -789,6 +824,14 @@ impl RadioMessage {
         }
     }
 
+    /// Returns the raw message payload
+    ///
+    /// # Returns
+    /// Slice of the message payload up to the logical length
+    pub fn payload(&self) -> &[u8] {
+        &self.payload[0..self.length]
+    }
+
     /// Returns the sender's node ID
     ///
     /// # Returns
@@ -965,7 +1008,7 @@ impl RadioMessage {
                 // Check if the mempool item matches the current message
                 for mempool_item in mempool_data_iterator {
                     // Check if the mempool item matches the current message
-                    if mempool_item.anchor_sequence() == anchor_sequence && mempool_item.transaction_payload_checksum() == checksum {
+                    if mempool_item.anchor_sequence == anchor_sequence && mempool_item.transaction_payload_checksum == checksum {
                         return false; // Found a matching mempool item
                     }
                 }
@@ -1027,8 +1070,8 @@ impl RadioMessage {
     /// Returns an iterator over RequestBlockPart packet indices
     ///
     /// Iterates through the list of packet indices being requested from a block.
-    /// Message layout: [0]=type, [1..5)=sender, [5..9)=sequence, [9..13)=checksum,
-    /// [13]=count, [14..14+count)=indices
+    /// Message layout: `[0]=type, [1..5)=sender, [5..9)=sequence, [9..13)=checksum,
+    /// [13]=count, [14..14+count)=indices`
     ///
     /// # Returns
     /// * `Some(RequestBlockPartIterator)` - Iterator over packet indices
@@ -1331,17 +1374,7 @@ impl<'a> Iterator for EchoResultIterator<'a> {
 ///
 /// Represents a single packet index being requested from a block.
 pub struct RequestBlockPartItem {
-    packet_index: u8,
-}
-
-impl RequestBlockPartItem {
-    /// Returns the requested packet index
-    ///
-    /// # Returns
-    /// Zero-based index of the packet being requested
-    pub fn packet_index(&self) -> u8 {
-        self.packet_index
-    }
+    pub packet_index: u8,
 }
 
 /// Iterator over RequestBlockPart packet indices
@@ -1387,26 +1420,8 @@ impl<'a> Iterator for RequestBlockPartIterator<'a> {
 ///
 /// Represents a transaction in the mempool by its anchor sequence and checksum.
 pub struct MempoolItem {
-    anchor_sequence: u32,
-    transaction_payload_checksum: u32,
-}
-
-impl MempoolItem {
-    /// Returns the anchor sequence number
-    ///
-    /// # Returns
-    /// Sequence number of the anchor block this transaction references
-    pub fn anchor_sequence(&self) -> u32 {
-        self.anchor_sequence
-    }
-
-    /// Returns the transaction payload checksum
-    ///
-    /// # Returns
-    /// CRC32C checksum of the transaction payload
-    pub fn transaction_payload_checksum(&self) -> u32 {
-        self.transaction_payload_checksum
-    }
+    pub anchor_sequence: u32,
+    pub transaction_payload_checksum: u32,
 }
 
 /// Iterator over mempool data entries
@@ -1541,7 +1556,7 @@ mod tests {
         let items: Vec<(u32, u32)> = m
             .get_mempool_data_iterator()
             .unwrap()
-            .map(|it| (it.anchor_sequence(), it.transaction_payload_checksum()))
+            .map(|it| (it.anchor_sequence, it.transaction_payload_checksum))
             .collect();
         assert_eq!(items.len(), capacity);
         assert_eq!(items[0], (0, 0xDEAD_BEEF));
@@ -1712,13 +1727,13 @@ mod tests {
         let m0 = RadioMessage::new_request_block_part(1, 0xAABBCCDD, 0x11223344);
         assert_eq!(m0.message_type(), MessageType::RequestBlockPart as u8);
         // count byte is 0, iterator should be empty
-        let v0: Vec<u8> = m0.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        let v0: Vec<u8> = m0.get_request_block_part_iterator().unwrap().map(|it| it.packet_index).collect();
         assert!(v0.is_empty());
 
         // one index
         let mut m1 = RadioMessage::new_request_block_part(2, 0xCAFEBABE, 0x55667788);
         m1.add_packet_index_to_request_block_part(9).unwrap();
-        let v1: Vec<u8> = m1.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        let v1: Vec<u8> = m1.get_request_block_part_iterator().unwrap().map(|it| it.packet_index).collect();
         assert_eq!(v1, vec![9]);
 
         // multiple indices in order
@@ -1726,7 +1741,110 @@ mod tests {
         for i in [1u8, 3, 4, 7, 9] {
             mm.add_packet_index_to_request_block_part(i).unwrap();
         }
-        let v: Vec<u8> = mm.get_request_block_part_iterator().unwrap().map(|it| it.packet_index()).collect();
+        let v: Vec<u8> = mm.get_request_block_part_iterator().unwrap().map(|it| it.packet_index).collect();
         assert_eq!(v, vec![1, 3, 4, 7, 9]);
+    }
+
+    // ============================================================================
+    // Additional Edge Case Tests
+    // ============================================================================
+
+    #[test]
+    fn test_message_sequence_numbers() {
+        let seq1 = 100u32;
+        let seq2 = 200u32;
+
+        let msg1 = RadioMessage::new_add_block(1, seq1, &[1, 2, 3]);
+        let msg2 = RadioMessage::new_add_block(1, seq2, &[4, 5, 6]);
+
+        assert_eq!(msg1.sequence(), Some(seq1));
+        assert_eq!(msg2.sequence(), Some(seq2));
+        assert_ne!(msg1.sequence(), msg2.sequence());
+    }
+
+    #[test]
+    fn test_echo_message_data_integrity() {
+        let node_id = 42u32;
+        let msg = RadioMessage::new_request_echo(node_id);
+
+        assert_eq!(msg.message_type(), MessageType::RequestEcho as u8);
+        assert_eq!(msg.sender_node_id(), node_id);
+    }
+
+    #[test]
+    fn test_echo_result_multiple_items() {
+        let mut echo_result = RadioMessage::new_echo_result(1);
+
+        assert!(echo_result.add_echo_result_item(2, 10, 11).is_ok());
+        assert!(echo_result.add_echo_result_item(3, 20, 21).is_ok());
+        assert!(echo_result.add_echo_result_item(4, 30, 31).is_ok());
+
+        if let Some(iterator) = echo_result.get_echo_result_data_iterator() {
+            let items: Vec<_> = iterator.collect();
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].neighbor_node, 2);
+            assert_eq!(items[1].send_link_quality, 20);
+            assert_eq!(items[2].receive_link_quality, 31);
+        } else {
+            panic!("Failed to get echo result iterator");
+        }
+    }
+
+    #[test]
+    fn test_maximum_quality_value() {
+        // Test that quality values are properly bounded
+        let mut echo_result = RadioMessage::new_echo_result(1);
+
+        // Add with max quality values
+        assert!(echo_result.add_echo_result_item(2, 63, 63).is_ok());
+
+        if let Some(iterator) = echo_result.get_echo_result_data_iterator() {
+            let items: Vec<_> = iterator.collect();
+            assert_eq!(items[0].send_link_quality, 63);
+            assert_eq!(items[0].receive_link_quality, 63);
+        }
+    }
+
+    #[test]
+    fn test_add_packet_bounds_checking() {
+        // Test that add_packet() handles out-of-bounds indices gracefully
+        use super::RadioPacket;
+
+        let mut msg = RadioMessage::new();
+        msg.payload[0] = MessageType::AddBlock as u8;
+
+        // Create a packet with invalid indices that would overflow
+        let mut packet = RadioPacket {
+            data: [0u8; RADIO_PACKET_SIZE],
+            length: RADIO_PACKET_SIZE,
+        };
+
+        // Set up multi-packet message header
+        packet.data[0] = MessageType::AddBlock as u8;
+        packet.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] = 255; // total_packet_count (unrealistic)
+        packet.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1] = 254; // packet_index (very high)
+
+        // This should not panic due to bounds checking
+        msg.add_packet(&packet);
+
+        // Message should still be valid (either unchanged or safely handled)
+        assert!(msg.length <= RADIO_MAX_MESSAGE_SIZE);
+    }
+
+    #[test]
+    fn test_add_packet_normal_operation() {
+        // Test that add_packet() works correctly for valid multi-packet messages
+
+        // Create an AddBlock message
+        let payload = vec![0xAA; 500]; // Multi-packet message
+        let msg = RadioMessage::new_add_block(1, 42, &payload);
+
+        // Get first packet and reconstruct
+        let packet = msg.get_packet(0).unwrap();
+        let reconstructed = RadioMessage::from_single_packet(packet);
+
+        // Verify reconstruction started correctly
+        assert_eq!(reconstructed.message_type(), MessageType::AddBlock as u8);
+        assert_eq!(reconstructed.sender_node_id(), 1);
     }
 }

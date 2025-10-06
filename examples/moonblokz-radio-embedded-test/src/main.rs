@@ -146,6 +146,7 @@ async fn main(spawner: Spawner) {
         relay_position_delay: 5,
         scoring_matrix: moonblokz_radio_lib::ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 123u8, 47u8]),
         retry_interval_for_missing_packets: 60,
+        tx_maximum_random_delay: 200,
     };
 
     if radio_communication_manager

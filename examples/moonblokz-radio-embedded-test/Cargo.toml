@@ -31,7 +31,7 @@ lora-phy = { git = "https://github.com/lora-rs/lora-rs.git", default-features = 
 log = "0.4"
 
 rp-usb-console = { version = "0.2"}
-moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-lora-sx1262"] }
+moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-lora-sx1262","memory-config-large"] }
 
 heapless = "0.9"
 
