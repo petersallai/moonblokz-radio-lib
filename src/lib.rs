@@ -398,7 +398,14 @@ impl std::error::Error for RadioInitError {}
 ///
 /// Messages queued for transmission are buffered here before being
 /// fragmented and scheduled by the TX scheduler.
-const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 10;
+#[cfg(feature = "memory-config-small")]
+const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 2;
+
+#[cfg(feature = "memory-config-medium")]
+const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 3;
+
+#[cfg(feature = "memory-config-large")]
+const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 8;
 
 /// Type alias for the outgoing message channel
 type OutgoingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
@@ -416,7 +423,13 @@ static OUTGOING_MESSAGE_QUEUE: OutgoingMessageQueue = Channel::new();
 /// Size of the incoming message queue
 ///
 /// Received and validated messages are buffered here for application processing.
-const INCOMING_MESSAGE_QUEUE_SIZE: usize = 10;
+
+#[cfg(feature = "memory-config-small")]
+const INCOMING_MESSAGE_QUEUE_SIZE: usize = 2;
+#[cfg(feature = "memory-config-medium")]
+const INCOMING_MESSAGE_QUEUE_SIZE: usize = 3;
+#[cfg(feature = "memory-config-large")]
+const INCOMING_MESSAGE_QUEUE_SIZE: usize = 8;
 
 /// Type alias for the incoming message channel
 type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
@@ -436,7 +449,15 @@ static INCOMING_MESSAGE_QUEUE: IncomingMessageQueue = Channel::new();
 /// Packets ready for transmission are buffered here before being sent
 /// to the radio device. Larger than message queues since messages can
 /// be fragmented into multiple packets.
+
+#[cfg(feature = "memory-config-small")]
 const TX_PACKET_QUEUE_SIZE: usize = 16;
+
+#[cfg(feature = "memory-config-medium")]
+const TX_PACKET_QUEUE_SIZE: usize = 32;
+
+#[cfg(feature = "memory-config-large")]
+const TX_PACKET_QUEUE_SIZE: usize = 64;
 
 /// Type alias for the TX packet channel
 type TXPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
@@ -455,7 +476,15 @@ static TX_PACKET_QUEUE: TXPacketQueue = Channel::new();
 ///
 /// Packets received from the radio device are buffered here before
 /// being processed and assembled into messages by the RX handler.
-const RX_PACKET_QUEUE_SIZE: usize = 16;
+
+#[cfg(feature = "memory-config-small")]
+const RX_PACKET_QUEUE_SIZE: usize = 2;
+
+#[cfg(feature = "memory-config-medium")]
+const RX_PACKET_QUEUE_SIZE: usize = 3;
+
+#[cfg(feature = "memory-config-large")]
+const RX_PACKET_QUEUE_SIZE: usize = 8;
 
 /// Type alias for the RX packet channel
 type RxPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
@@ -493,6 +522,14 @@ static RX_STATE_QUEUE: RxStateQueue = Channel::new();
 ///
 /// The application reports message processing results through this queue,
 /// enabling the RX handler to coordinate responses and relay decisions.
+
+#[cfg(feature = "memory-config-small")]
+const PROCESS_RESULT_QUEUE_SIZE: usize = 2;
+
+#[cfg(feature = "memory-config-medium")]
+const PROCESS_RESULT_QUEUE_SIZE: usize = 5;
+
+#[cfg(feature = "memory-config-large")]
 const PROCESS_RESULT_QUEUE_SIZE: usize = 10;
 
 /// Type alias for the processing result channel
