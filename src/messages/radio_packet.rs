@@ -48,6 +48,7 @@ use crate::{RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, RADIO_MULTI_PACKET_PACKET_HE
 /// // let msg_type = packet.message_type();
 /// ```
 #[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioPacket {
     /// Raw packet data buffer of fixed size
     pub data: [u8; RADIO_PACKET_SIZE],
@@ -95,7 +96,7 @@ impl RadioPacket {
             }
             self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
         } else {
-            1// For other message types, always 1 packet
+            1 // For other message types, always 1 packet
         }
     }
 
@@ -168,7 +169,7 @@ impl RadioPacket {
             }
             self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + 1]
         } else {
-            0// For other message types, always 0
+            0 // For other message types, always 0
         }
     }
 

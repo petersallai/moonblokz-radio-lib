@@ -65,14 +65,15 @@ const QUALITY_MASK: u8 = 0b0011_1111;
 /// * `2` - Fair (poor_limit ≤ quality < excellent_limit)
 /// * `3` - Excellent (quality ≥ excellent_limit)
 fn calc_category(value: u8, poor_limit: u8, excellent_limit: u8) -> u8 {
-    if value & QUALITY_MASK == 0 {
-        0 // Zero
-    } else if value < poor_limit {
-        1 // Poor
-    } else if value < excellent_limit {
-        2 // Fair
+    let quality = value & QUALITY_MASK;
+    if quality == 0 {
+        0
+    } else if quality < poor_limit {
+        1
+    } else if quality < excellent_limit {
+        2
     } else {
-        3 // Excellent
+        3
     }
 }
 
@@ -102,6 +103,12 @@ pub(crate) struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
     /// should receive the relay, not the entire network.
     requestor_index: Option<usize>,
 }
+
+#[allow(dead_code)]
+const _ASSERT_CONNECTION_MATRIX_SQUARE_FITS_U32: () = assert!(
+    crate::CONNECTION_MATRIX_SIZE * 255 <= u32::MAX as usize,
+    "CONNECTION_MATRIX_SIZE*MAX score size must fit in u32"
+);
 
 impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
     /// Calculates the relay score for this message
@@ -140,9 +147,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
             //because of the limited number of nodes, the score won't overflow u32
             score += scoring_matrix.matrix[network_category as usize][own_category as usize] as u32;
         } else {
-            for i in 0..CONNECTION_MATRIX_SIZE {
-                let network_category = calc_category(self.message_connections[i], scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
-                let own_category = calc_category(own_connections[i], scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
+            for (network_quality, own_quality) in self.message_connections.iter().zip(own_connections.iter()).take(CONNECTION_MATRIX_SIZE) {
+                let network_category = calc_category(*network_quality, scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
+                let own_category = calc_category(*own_quality, scoring_matrix.poor_limit, scoring_matrix.excellent_limit);
                 score += scoring_matrix.matrix[network_category as usize][own_category as usize] as u32;
             }
         }
@@ -243,7 +250,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// # Returns
     ///
     /// A new wait pool with no messages
-    pub fn new(relay_position_delay: u64, scoring_matrix: ScoringMatrix, rng_seed: u64) -> Self {
+    pub fn with(relay_position_delay: u64, scoring_matrix: ScoringMatrix, rng_seed: u64) -> Self {
         Self {
             items: [const { None }; WAIT_POOL_SIZE],
             relay_position_delay,
@@ -285,7 +292,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// # Score-Based Removal
     ///
     /// If the updated score falls below the relay threshold, the message is removed
-    /// from the pool (another node is better positioned to relay).
+    /// from the pool (another nodes with better position already relayaed the message).
     ///
     /// # Arguments
     ///
@@ -308,8 +315,8 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             if let Some(item) = item_opt {
                 if item.message == *message {
                     //log!(log::Level::Debug, "[{:?}] updating(add or) waitpool item", self.own_node_id);
-                    for i in 0..CONNECTION_MATRIX_SIZE {
-                        item.message_connections[i] = max(item.message_connections[i], sender_connections[i] & QUALITY_MASK);
+                    for (message_conn, sender_conn) in item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE) {
+                        *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
                     }
 
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
@@ -319,8 +326,9 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     }
                     let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
 
-                    item.activation_time =
-                        Instant::now() + Duration::from_secs(position * self.relay_position_delay) + Duration::from_millis(self.rng.next_u64() % 300);
+                    item.activation_time = Instant::now()
+                        + Duration::from_secs(position * self.relay_position_delay)
+                        + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
                     return true;
                 }
             }
@@ -386,8 +394,13 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             requestor_index,
         };
 
-        for i in 0..CONNECTION_MATRIX_SIZE {
-            new_item.message_connections[i] = sender_connections[i] & QUALITY_MASK;
+        for (message_conn, sender_conn) in new_item
+            .message_connections
+            .iter_mut()
+            .zip(sender_connections.iter())
+            .take(CONNECTION_MATRIX_SIZE)
+        {
+            *message_conn = sender_conn & QUALITY_MASK;
         }
 
         if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
@@ -465,9 +478,11 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                 if let Some(item) = item_opt {
                     if item.requestor_index.is_some() && item.message.message_type() == packet.message_type() {
                         if let (Some(message_sequence), Some(message_payload_checksum)) = (item.message.sequence(), item.message.payload_checksum()) {
-                            if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum && message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
-                                for i in 0..CONNECTION_MATRIX_SIZE {
-                                    item.message_connections[i] = max(item.message_connections[i], sender_connections[i] & QUALITY_MASK);
+                            if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
+                                for (message_conn, sender_conn) in
+                                    item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE)
+                                {
+                                    *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
                                 }
 
                                 if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
@@ -475,12 +490,11 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                                     *item_opt = None;
                                     return;
                                 }
-                                let position =
-                                    item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
+                                let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
 
                                 item.activation_time = Instant::now()
                                     + Duration::from_secs(position * self.relay_position_delay)
-                                    + Duration::from_millis(self.rng.next_u64() % 300);
+                                    + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
                                 return;
                             }
                         }

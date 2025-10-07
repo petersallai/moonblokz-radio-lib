@@ -313,6 +313,7 @@ pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver
 ///
 /// The device uses a state-based design to ensure hardware resources are properly
 /// initialized before use and prevents invalid operations.
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioDevice {
     /// Current state of the device (initialized or not)
     state: RadioDeviceState,

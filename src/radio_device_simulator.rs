@@ -121,6 +121,7 @@ pub type RadioInputQueueSender = embassy_sync::channel::Sender<'static, Critical
 ///
 /// These messages represent operations the radio wants to perform on the
 /// simulated network.
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum RadioOutputMessage {
     /// Request to transmit a packet to the network
     SendPacket(RadioPacket),
@@ -132,6 +133,7 @@ pub enum RadioOutputMessage {
 ///
 /// These messages represent events from the simulated network affecting
 /// this radio device.
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum RadioInputMessage {
     /// An incoming packet received from another node in the network
     ReceivePacket(ReceivedPacket),
@@ -239,6 +241,7 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
 /// - Testing relay logic and message routing
 /// - Simulating packet loss and collisions
 /// - Development without embedded hardware
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioDevice {
     /// Sender for outgoing messages to the network simulator
     output_queue_sender: RadioOutputQueueSender,
@@ -267,12 +270,12 @@ impl RadioDevice {
     /// static OUTPUT_QUEUE: RadioOutputQueue = Channel::new();
     /// static INPUT_QUEUE: RadioInputQueue = Channel::new();
     ///
-    /// let radio = RadioDevice::new(
+    /// let radio = RadioDevice::with(
     ///     OUTPUT_QUEUE.sender(),
     ///     INPUT_QUEUE.receiver()
     /// );
     /// ```
-    pub const fn new(output_queue_sender: RadioOutputQueueSender, input_queue_receiver: RadioInputQueueReceiver) -> Self {
+    pub const fn with(output_queue_sender: RadioOutputQueueSender, input_queue_receiver: RadioInputQueueReceiver) -> Self {
         RadioDevice {
             output_queue_sender,
             input_queue_receiver,

@@ -198,7 +198,7 @@ async fn main(spawner: Spawner) {
                             );
                             let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
-                            let mut response_message = RadioMessage::new_add_block(own_node_id, sequence, &payload);
+                            let mut response_message = RadioMessage::add_block_with(own_node_id, sequence, &payload);
 
                             if let Some(request_blockpart_iterator) = msg.get_request_block_part_iterator() {
                                 let mut block_parts: [bool; moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT] = [false; moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT];
@@ -226,7 +226,7 @@ async fn main(spawner: Spawner) {
                 if Instant::now() >= next_send_time {
                     let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
-                    let message = RadioMessage::new_add_block(own_node_id, sequence_number, &payload);
+                    let message = RadioMessage::add_block_with(own_node_id, sequence_number, &payload);
                     log::info!(
                         "Sending AddBlock: sender: {}, sequence: {}, length: {}",
                         message.sender_node_id(),

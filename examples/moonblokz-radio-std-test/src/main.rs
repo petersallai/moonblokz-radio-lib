@@ -16,7 +16,7 @@ async fn run(node_id: u32, radio_communication_manager: &'static RadioCommunicat
     loop {
         log!(log::Level::Debug, "sending message from node {}: {}", node_id, i);
         let payload: [u8; 1111] = [i; 1111];
-        let _ = radio_communication_manager.send_message(RadioMessage::new_add_transaction(node_id, i as u32, 1, &payload));
+        let _ = radio_communication_manager.send_message(RadioMessage::add_transaction_with(node_id, i as u32, 1, &payload));
         Timer::after(Duration::from_secs(5)).await;
         i += 1;
     }

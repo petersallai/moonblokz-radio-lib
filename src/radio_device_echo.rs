@@ -102,6 +102,7 @@ pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver
 /// let radio_device = RadioDevice::new();
 /// // Device is ready to use immediately, no initialization needed
 /// ```
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioDevice {}
 
 impl Default for RadioDevice {

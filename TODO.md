@@ -6,14 +6,12 @@
 - Documentation
   - Review comments by hand
   - Write a comprehensive README.MD
-- Feature flag for deriving debug?
 - Logging:
   - Comprehensive logging
   - Logging level feature to filter logs in compile time
   - Log important messages to create visualization
 - Memory management:
   - Profile memory usage
-- Constructor review
 
 ## Implement this functions during blockchain development
 

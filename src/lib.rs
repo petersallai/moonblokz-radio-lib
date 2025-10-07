@@ -250,13 +250,14 @@ pub const MAX_NODE_COUNT: usize = 1;
 ///     delay_between_tx_messages: 20,    // 20 seconds between messages
 ///     echo_request_minimal_interval: 86400, // Echo every 24 hours
 ///     echo_messages_target_interval: 100,   // Target 100 messages between echoes
-///     echo_gathering_timeout: 10,           // Wait 10 seconds for echo responses
+///     echo_gathering_timeout: 10,           // Wait 10 minutes for echo responses
 ///     relay_position_delay: 10,             // 10 second delay for relay scoring
 ///     scoring_matrix: ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]),
 ///     retry_interval_for_missing_packets: 60, // Retry missing packets after 60 seconds
 ///    tx_maximum_random_delay: 200,        // Up to 200ms random delay
 /// };
 /// ```
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioConfiguration {
     /// Delay in seconds between individual packets within a multi-packet message
     ///
@@ -279,7 +280,7 @@ pub struct RadioConfiguration {
     /// Adaptive echo timing: if the network is active, echo less frequently.
     pub echo_messages_target_interval: u8,
 
-    /// Timeout in seconds to wait for echo responses during the gathering phase
+    /// Timeout in minutes to wait for echo responses during the gathering phase
     ///
     /// After broadcasting an echo request, the node waits this long to collect responses
     /// from neighbors before processing the topology update.
@@ -346,6 +347,52 @@ impl std::fmt::Display for ReceiveMessageError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ReceiveMessageError {}
+
+/// Error returned when attempting to initialize the radio communication system
+///
+/// Indicates which specific task failed to spawn during initialization.
+/// Task spawning can fail if the executor's task pool is full or if
+/// the task configuration is invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RadioInitError {
+    /// Failed to spawn the radio device task
+    ///
+    /// The radio device task handles low-level communication with the
+    /// radio hardware, managing packet transmission and reception.
+    RadioDeviceTaskInitError,
+
+    /// Failed to spawn the TX scheduler task
+    ///
+    /// The TX scheduler task manages outgoing message fragmentation,
+    /// timing, and coordination with the radio device.
+    TxTaskInitError,
+
+    /// Failed to spawn the RX handler task
+    ///
+    /// The RX handler task processes incoming packets, assembles messages,
+    /// handles deduplication, and coordinates relay decisions.
+    RxTaskInitError,
+}
+
+#[cfg(feature = "std")]
+impl std::fmt::Display for RadioInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RadioInitError::RadioDeviceTaskInitError => {
+                write!(f, "failed to spawn radio device task")
+            }
+            RadioInitError::TxTaskInitError => {
+                write!(f, "failed to spawn TX scheduler task")
+            }
+            RadioInitError::RxTaskInitError => {
+                write!(f, "failed to spawn RX handler task")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for RadioInitError {}
 
 /// Size of the outgoing message queue
 ///
@@ -495,6 +542,7 @@ static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 ///     15   // relay_score_limit
 /// );
 /// ```
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct ScoringMatrix {
     /// 4x4 matrix of relay scores
     ///
@@ -606,6 +654,7 @@ enum RxState {
 ///
 /// The application reports these results back to enable appropriate
 /// responses, relay decisions, and network coordination.
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum MessageProcessingResult {
     /// Requested block was not found in this node's storage
     ///
@@ -651,6 +700,9 @@ pub enum MessageProcessingResult {
 /// Item delivered to the application via the incoming message queue
 ///
 /// Either a check for duplicate detection or a new message to process.
+/// the default use-case for this item is to deliver new messages, so the smaller CheckIfAlreadyHaveMessage is not a real problem here.
+#[allow(clippy::large_enum_variant)]
+#[cfg_attr(feature = "std", derive(Debug))]
 pub enum IncomingMessageItem {
     /// Query if message was already processed (for duplicate detection)
     ///
@@ -664,6 +716,7 @@ pub enum IncomingMessageItem {
 }
 
 /// A packet received from the radio with associated signal quality metrics
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct ReceivedPacket {
     /// The received radio packet containing data
     pub packet: RadioPacket,
@@ -676,6 +729,7 @@ pub struct ReceivedPacket {
 }
 
 /// Internal state of the RadioCommunicationManager
+#[cfg_attr(feature = "std", derive(Debug))]
 enum RadioCommunicationManagerState {
     /// Manager has been created but not yet initialized
     Uninitialized,
@@ -717,7 +771,7 @@ enum RadioCommunicationManagerState {
 /// manager.initialize(config, spawner, radio_device, own_node_id, rng_seed)?;
 ///
 /// // Send a message
-/// let message = RadioMessage::new_request_echo(own_node_id);
+/// let message = RadioMessage::request_echo_with(own_node_id);
 /// manager.send_message(message)?;
 ///
 /// // Receive messages
@@ -732,6 +786,7 @@ enum RadioCommunicationManagerState {
 ///     }
 /// }
 /// ```
+#[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioCommunicationManager {
     state: RadioCommunicationManagerState,
 }
@@ -778,7 +833,9 @@ impl RadioCommunicationManager {
     ///
     /// # Returns
     /// * `Ok(())` - Successfully initialized
-    /// * `Err(())` - Failed to spawn one or more tasks
+    /// * `Err(RadioInitError::RadioDeviceTaskInitError)` - Radio device task failed to spawn
+    /// * `Err(RadioInitError::TxTaskInitError)` - TX scheduler task failed to spawn
+    /// * `Err(RadioInitError::RxTaskInitError)` - RX handler task failed to spawn
     ///
     /// # Example
     /// ```rust,ignore
@@ -793,7 +850,7 @@ impl RadioCommunicationManager {
         radio_device: RadioDevice,
         own_node_id: u32,
         rng_seed: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), RadioInitError> {
         return self.initialize_common(
             radio_config,
             spawner,
@@ -824,7 +881,9 @@ impl RadioCommunicationManager {
     ///
     /// # Returns
     /// * `Ok(())` - Successfully initialized
-    /// * `Err(())` - Failed to spawn one or more tasks
+    /// * `Err(RadioInitError::RadioDeviceTaskInitError)` - Radio device task failed to spawn
+    /// * `Err(RadioInitError::TxTaskInitError)` - TX scheduler task failed to spawn
+    /// * `Err(RadioInitError::RxTaskInitError)` - RX handler task failed to spawn
     ///
     /// # Note
     /// Queue memory is leaked (Box::leak) to obtain 'static lifetime required
@@ -837,7 +896,7 @@ impl RadioCommunicationManager {
         radio_device: RadioDevice,
         own_node_id: u32,
         rng_seed: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), RadioInitError> {
         let outgoing_message_queue_temp: OutgoingMessageQueue = Channel::new();
         let outgoing_message_queue_static: &'static OutgoingMessageQueue = Box::leak(Box::new(outgoing_message_queue_temp));
 
@@ -893,7 +952,13 @@ impl RadioCommunicationManager {
     ///
     /// # Returns
     /// * `Ok(())` - All tasks spawned successfully
-    /// * `Err(())` - One or more tasks failed to spawn
+    /// * `Err(RadioInitError::RadioDeviceTaskInitError)` - Radio device task failed to spawn
+    /// * `Err(RadioInitError::TxTaskInitError)` - TX scheduler task failed to spawn
+    /// * `Err(RadioInitError::RxTaskInitError)` - RX handler task failed to spawn
+    ///
+    /// # Note
+    /// We allow too many arguments here for clarity and to avoid wrapping in structs.
+    #[allow(clippy::too_many_arguments)]
     fn initialize_common(
         &mut self,
         radio_config: RadioConfiguration,
@@ -907,7 +972,7 @@ impl RadioCommunicationManager {
         rx_state_queue: &'static RxStateQueue,
         own_node_id: u32,
         rng_seed: u64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), RadioInitError> {
         let mut rng = WyRand::seed_from_u64(rng_seed);
 
         // Destructure config to avoid partial moves later
@@ -931,7 +996,7 @@ impl RadioCommunicationManager {
             rng.next_u64(),
         ));
         if radion_device_task_result.is_err() {
-            return Err(());
+            return Err(RadioInitError::RadioDeviceTaskInitError);
         }
         log!(log::Level::Debug, "Radio device task spawned");
 
@@ -945,7 +1010,7 @@ impl RadioCommunicationManager {
             rng.next_u64(),
         ));
         if tx_scheduler_task_result.is_err() {
-            return Err(());
+            return Err(RadioInitError::TxTaskInitError);
         }
         log!(log::Level::Debug, "TX Scheduler task spawned");
 
@@ -965,7 +1030,7 @@ impl RadioCommunicationManager {
             rng.next_u64(),
         ));
         if rx_handler_task_result.is_err() {
-            return Err(());
+            return Err(RadioInitError::RxTaskInitError);
         }
         log!(log::Level::Debug, "RX Handler task spawned");
         log!(log::Level::Info, "Radio communication initialized");
@@ -994,7 +1059,7 @@ impl RadioCommunicationManager {
     ///
     /// # Example
     /// ```rust,ignore
-    /// let message = RadioMessage::new_request_echo(own_node_id);
+    /// let message = RadioMessage::request_echo_with(own_node_id);
     /// manager.send_message(message)?;
     /// ```
     pub fn send_message(&self, message: RadioMessage) -> Result<(), SendMessageError> {
@@ -1240,7 +1305,7 @@ mod tests {
     #[test]
     fn manager_send_message_not_inited() {
         let mgr = RadioCommunicationManager::new();
-        let msg = RadioMessage::new_request_echo(123);
+        let msg = RadioMessage::request_echo_with(123);
         match mgr.send_message(msg) {
             Err(SendMessageError::NotInited) => {}
             other => panic!("Expected NotInited, got: {:?}", core::mem::discriminant(&other)),
@@ -1260,7 +1325,7 @@ mod tests {
     #[test]
     fn reexports_are_usable() {
         // Basic sanity that re-exported constructors work from the crate root
-        let msg = RadioMessage::new_get_mempool_state(42);
+        let msg = RadioMessage::get_mempool_state_with(42);
         assert_eq!(msg.message_type(), MessageType::RequestNewMempoolItem as u8);
     }
 
@@ -1406,7 +1471,7 @@ mod tests {
 
     #[test]
     fn test_message_clone() {
-        let msg1 = RadioMessage::new_request_echo(123);
+        let msg1 = RadioMessage::request_echo_with(123);
         let msg2 = msg1.clone();
 
         assert_eq!(msg1.sender_node_id(), msg2.sender_node_id());
@@ -1415,7 +1480,7 @@ mod tests {
 
     #[test]
     fn test_empty_message_payload() {
-        let msg = RadioMessage::new_add_block(1, 0, &[]);
+        let msg = RadioMessage::add_block_with(1, 0, &[]);
         // Message length includes header (13 bytes: type + sender_id + sequence)
         // so empty payload still has header
         assert!(msg.length() >= 13);
@@ -1423,14 +1488,14 @@ mod tests {
 
     #[test]
     fn test_node_id_zero() {
-        let msg = RadioMessage::new_request_echo(0);
+        let msg = RadioMessage::request_echo_with(0);
         assert_eq!(msg.sender_node_id(), 0);
     }
 
     #[test]
     fn test_sequence_number_wraparound() {
         let max_seq = u32::MAX;
-        let msg = RadioMessage::new_add_block(1, max_seq, &[1, 2, 3]);
+        let msg = RadioMessage::add_block_with(1, max_seq, &[1, 2, 3]);
         assert_eq!(msg.sequence(), Some(max_seq));
     }
 
@@ -1439,7 +1504,7 @@ mod tests {
         // Create message with maximum payload size minus headers
         let payload_size = RADIO_MAX_MESSAGE_SIZE - 13; // Account for header
         let large_payload = vec![0xAAu8; payload_size];
-        let msg = RadioMessage::new_add_block(1, 100, &large_payload);
+        let msg = RadioMessage::add_block_with(1, 100, &large_payload);
         assert!(msg.length() <= RADIO_MAX_MESSAGE_SIZE);
         assert!(msg.length() > payload_size); // Should include headers
     }
@@ -1484,8 +1549,8 @@ mod tests {
     #[test]
     fn test_payload_checksum_consistency() {
         let payload = [1u8, 2, 3, 4, 5];
-        let msg1 = RadioMessage::new_add_block(1, 100, &payload);
-        let msg2 = RadioMessage::new_add_block(1, 100, &payload);
+        let msg1 = RadioMessage::add_block_with(1, 100, &payload);
+        let msg2 = RadioMessage::add_block_with(1, 100, &payload);
 
         assert_eq!(msg1.payload_checksum(), msg2.payload_checksum());
     }
@@ -1495,8 +1560,8 @@ mod tests {
         let payload1 = [1u8, 2, 3, 4, 5];
         let payload2 = [1u8, 2, 3, 4, 6];
 
-        let msg1 = RadioMessage::new_add_block(1, 100, &payload1);
-        let msg2 = RadioMessage::new_add_block(1, 100, &payload2);
+        let msg1 = RadioMessage::add_block_with(1, 100, &payload1);
+        let msg2 = RadioMessage::add_block_with(1, 100, &payload2);
 
         assert_ne!(msg1.payload_checksum(), msg2.payload_checksum());
     }
@@ -1524,6 +1589,21 @@ mod tests {
         let recv_err = ReceiveMessageError::NotInited;
         assert_eq!(format!("{}", recv_err), "RadioCommunicationManager not initialized");
         let _: &dyn std::error::Error = &recv_err;
+
+        // Test RadioInitError
+        let init_err1 = RadioInitError::RadioDeviceTaskInitError;
+        let init_err2 = RadioInitError::TxTaskInitError;
+        let init_err3 = RadioInitError::RxTaskInitError;
+
+        // Verify Display implementation
+        assert_eq!(format!("{}", init_err1), "failed to spawn radio device task");
+        assert_eq!(format!("{}", init_err2), "failed to spawn TX scheduler task");
+        assert_eq!(format!("{}", init_err3), "failed to spawn RX handler task");
+
+        // Verify std::error::Error trait is implemented
+        let _: &dyn std::error::Error = &init_err1;
+        let _: &dyn std::error::Error = &init_err2;
+        let _: &dyn std::error::Error = &init_err3;
     }
 
     #[test]
@@ -1537,5 +1617,10 @@ mod tests {
         let recv_err = ReceiveMessageError::NotInited;
         let _recv_err_copy = recv_err; // Test Copy
         let _recv_err_debug = format!("{:?}", recv_err); // Test Debug
+
+        // Test RadioInitError
+        let init_err = RadioInitError::RadioDeviceTaskInitError;
+        let _init_err_copy = init_err; // Test Copy
+        let _init_err_debug = format!("{:?}", init_err); // Test Debug
     }
 }
