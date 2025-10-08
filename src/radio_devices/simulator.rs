@@ -157,13 +157,14 @@ pub enum RadioInputMessage {
 /// * `radio_device` - RadioDevice instance with input/output queues
 /// * `tx_receiver` - Channel receiver for outgoing packets from TX scheduler
 /// * `rx_sender` - Channel sender for incoming packets to RX handler
+/// * `own_node_id` - This node's unique identifier for logging
 /// * `rng_seed` - Seed for random number generator (used for CAD backoff)
 ///
 /// # Behavior
 /// - Races between receiving from network simulator and transmitting packets
 /// - On input: Forwards ReceivePacket to RX handler, ignores unexpected CADResponse
 /// - On TX: Performs CAD loop (request CAD, wait if busy, transmit when clear)
-/// - Handles interleaved packets during CAD wait period
+/// - Handles interleaved packets during CAD wait period with node identification in logs
 ///
 /// # CAD Loop
 /// 1. Send RequestCAD to network simulator
@@ -177,31 +178,35 @@ pub enum RadioInputMessage {
 /// - Input queue: receives CADResponse and ReceivePacket from simulator
 /// - Simulator is responsible for implementing network topology and packet routing
 #[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
-pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, rng_seed: u64) {
-    log!(Level::Info, "Simulated radio device task started");
+pub async fn radio_device_task(radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32, rng_seed: u64) {
+    log!(Level::Info, "[{}] Simulated radio device task started", own_node_id);
     let mut rng = WyRand::seed_from_u64(rng_seed);
     loop {
         let mut next_cad = true;
         match select(radio_device.input_queue_receiver.receive(), tx_receiver.receive()).await {
             Either::First(message) => match message {
                 RadioInputMessage::ReceivePacket(pkt) => {
+                    log!(Level::Trace, "[{}] Received packet: {:?}", own_node_id, pkt);
                     rx_sender.send(pkt).await;
                 }
                 RadioInputMessage::CADResponse(_busy) => {
-                    log!(Level::Warn, "Not waiting for CAD response. Dropping.");
+                    log!(Level::Warn, "[{}] Not waiting for CAD response. Dropping.", own_node_id);
                 }
             },
             Either::Second(packet) => loop {
+                log!(Level::Trace, "[{}] Requesting CAD", own_node_id);
                 if next_cad {
                     radio_device.output_queue_sender.send(RadioOutputMessage::RequestCAD).await;
                 }
 
                 match radio_device.input_queue_receiver.receive().await {
                     RadioInputMessage::ReceivePacket(pkt) => {
+                        log!(Level::Trace, "[{}] Received packet: {:?}", own_node_id, pkt);
                         rx_sender.send(pkt).await;
                         next_cad = false;
                     }
                     RadioInputMessage::CADResponse(busy) => {
+                        log!(Level::Trace, "[{}] Received CAD response: busy={}", own_node_id, busy);
                         next_cad = true;
                         if busy {
                             Timer::after(embassy_time::Duration::from_millis(
@@ -210,6 +215,7 @@ pub(crate) async fn radio_device_task(radio_device: RadioDevice, tx_receiver: Tx
                             .await;
                             continue;
                         } else {
+                            log!(Level::Trace, "[{}] Channel clear, sending packet: {:?}", own_node_id, packet);
                             radio_device.output_queue_sender.send(RadioOutputMessage::SendPacket(packet)).await;
                             break;
                         }

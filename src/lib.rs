@@ -18,7 +18,7 @@
 //!
 //! ## Features
 //!
-//! - `radio-device-lora-sx1262`: LoRa SX1262 hardware support
+//! - `radio-device-rp-lora-sx1262`: LoRa SX1262 hardware support
 //! - `radio-device-simulator`: Network simulator for testing
 //! - `radio-device-echo`: Simple echo device for testing
 //! - `std`: Standard library support (disabled for embedded targets)
@@ -51,9 +51,9 @@
 #![allow(async_fn_in_trait)]
 
 #[cfg(any(
-    all(feature = "radio-device-echo", any(feature = "radio-device-lora-sx1262", feature = "radio-device-simulator")),
-    all(feature = "radio-device-lora-sx1262", any(feature = "radio-device-echo", feature = "radio-device-simulator")),
-    all(feature = "radio-device-simulator", any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262")),
+    all(feature = "radio-device-echo", any(feature = "radio-device-rp-lora-sx1262", feature = "radio-device-simulator")),
+    all(feature = "radio-device-rp-lora-sx1262", any(feature = "radio-device-echo", feature = "radio-device-simulator")),
+    all(feature = "radio-device-simulator", any(feature = "radio-device-echo", feature = "radio-device-rp-lora-sx1262")),
 ))]
 compile_error!("Only one radio implementation feature can be enabled at a time");
 
@@ -66,7 +66,7 @@ compile_error!("Only one memory configuration feature can be enabled at a time")
 
 #[cfg(all(
     not(test),
-    not(any(feature = "radio-device-echo", feature = "radio-device-lora-sx1262", feature = "radio-device-simulator"))
+    not(any(feature = "radio-device-echo", feature = "radio-device-rp-lora-sx1262", feature = "radio-device-simulator"))
 ))]
 compile_error!("At least one radio implementation feature must be enabled");
 
@@ -76,29 +76,11 @@ compile_error!("At least one radio implementation feature must be enabled");
 ))]
 compile_error!("At least one memory configuration feature must be enabled");
 
-#[cfg(feature = "radio-device-lora-sx1262")]
-pub mod radio_device_lora_sx1262;
+// Radio device implementations
+pub mod radio_devices;
 
-#[cfg(feature = "radio-device-echo")]
-pub mod radio_device_echo;
-
-#[cfg(feature = "radio-device-simulator")]
-pub mod radio_device_simulator;
-
-#[cfg(feature = "radio-device-lora-sx1262")]
-use crate::radio_device_lora_sx1262::RadioDevice;
-#[cfg(feature = "radio-device-lora-sx1262")]
-use crate::radio_device_lora_sx1262::radio_device_task;
-
-#[cfg(feature = "radio-device-echo")]
-use crate::radio_device_echo::RadioDevice;
-#[cfg(feature = "radio-device-echo")]
-use crate::radio_device_echo::radio_device_task;
-
-#[cfg(feature = "radio-device-simulator")]
-use crate::radio_device_simulator::RadioDevice;
-#[cfg(feature = "radio-device-simulator")]
-use crate::radio_device_simulator::radio_device_task;
+// Import the active radio device implementation
+use crate::radio_devices::{RadioDevice, radio_device_task};
 
 use crate::tx_scheduler::tx_scheduler_task;
 use embassy_executor::Spawner;
@@ -117,6 +99,9 @@ use rand_wyrand::WyRand;
 
 // Re-export types from messages module
 pub use messages::{EchoResultItem, EchoResultIterator, MessageType, RadioMessage, RadioPacket};
+
+// Re-export link quality utilities from radio devices module
+pub use radio_devices::{calculate_link_quality, normalize};
 
 /// Size of the header for multi-packet messages (13 bytes)
 ///
@@ -316,6 +301,12 @@ pub enum SendMessageError {
 
     /// The RadioCommunicationManager has not been initialized yet
     NotInited,
+}
+
+impl<T> From<embassy_sync::channel::TrySendError<T>> for SendMessageError {
+    fn from(_: embassy_sync::channel::TrySendError<T>) -> Self {
+        SendMessageError::ChannelFull
+    }
 }
 
 #[cfg(feature = "std")]
@@ -828,14 +819,6 @@ pub struct RadioCommunicationManager {
     state: RadioCommunicationManagerState,
 }
 
-//TODO: generic Constant Params and consolidate new and initialize methods
-
-impl Default for RadioCommunicationManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RadioCommunicationManager {
     /// Creates a new uninitialized RadioCommunicationManager
     ///
@@ -1010,6 +993,13 @@ impl RadioCommunicationManager {
         own_node_id: u32,
         rng_seed: u64,
     ) -> Result<(), RadioInitError> {
+        log!(
+            log::Level::Info,
+            "[{}] Initializing radio communication. Own node ID: {}",
+            own_node_id,
+            own_node_id
+        );
+
         let mut rng = WyRand::seed_from_u64(rng_seed);
 
         // Destructure config to avoid partial moves later
@@ -1030,12 +1020,13 @@ impl RadioCommunicationManager {
             radio_device,
             tx_packet_queue.receiver(),
             rx_packet_queue.sender(),
+            own_node_id,
             rng.next_u64(),
         ));
         if radion_device_task_result.is_err() {
             return Err(RadioInitError::RadioDeviceTaskInitError);
         }
-        log!(log::Level::Debug, "Radio device task spawned");
+        log!(log::Level::Debug, "[{}] Radio device task spawned", own_node_id);
 
         let tx_scheduler_task_result = spawner.spawn(tx_scheduler_task(
             outgoing_message_queue.receiver(),
@@ -1044,12 +1035,13 @@ impl RadioCommunicationManager {
             delay_between_tx_packets,
             delay_between_tx_messages,
             tx_maximum_random_delay,
+            own_node_id,
             rng.next_u64(),
         ));
         if tx_scheduler_task_result.is_err() {
             return Err(RadioInitError::TxTaskInitError);
         }
-        log!(log::Level::Debug, "TX Scheduler task spawned");
+        log!(log::Level::Debug, "[{}] TX Scheduler task spawned", own_node_id);
 
         let rx_handler_task_result = spawner.spawn(rx_handler::rx_handler_task(
             incoming_message_queue.sender(),
@@ -1069,8 +1061,8 @@ impl RadioCommunicationManager {
         if rx_handler_task_result.is_err() {
             return Err(RadioInitError::RxTaskInitError);
         }
-        log!(log::Level::Debug, "RX Handler task spawned");
-        log!(log::Level::Info, "Radio communication initialized");
+        log!(log::Level::Debug, "[{}] RX Handler task spawned", own_node_id);
+        log!(log::Level::Info, "[{}] Radio communication initialized", own_node_id);
 
         self.state = RadioCommunicationManagerState::Initialized {
             outgoing_message_queue_sender: outgoing_message_queue.sender(),
@@ -1108,7 +1100,7 @@ impl RadioCommunicationManager {
                 outgoing_message_queue_sender, ..
             } => outgoing_message_queue_sender,
         };
-        outgoing_message_queue_sender.try_send(message).map_err(|_| SendMessageError::ChannelFull)?;
+        outgoing_message_queue_sender.try_send(message)?;
         Ok(())
     }
 
@@ -1185,138 +1177,18 @@ impl RadioCommunicationManager {
     ///     // ...
     /// }
     /// ```
-    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult) {
+    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult) -> Result<(), SendMessageError> {
         let process_result_queue_sender = match &self.state {
             RadioCommunicationManagerState::Uninitialized => {
-                return;
+                return Err(SendMessageError::NotInited);
             }
             RadioCommunicationManagerState::Initialized {
                 process_result_queue_sender, ..
             } => process_result_queue_sender,
         };
-        process_result_queue_sender.try_send(message_processing_result).ok();
+        process_result_queue_sender.try_send(message_processing_result)?;
+        Ok(())
     }
-}
-
-// --- Link Quality Calculation Constants ---
-// These values define the expected operational range for radio signal metrics.
-// Values are typical for LoRaWAN and similar long-range radio systems.
-
-/// Minimum RSSI value expected for decodable signals (in dBm)
-///
-/// Signals weaker than this are typically below the noise floor and cannot
-/// be reliably decoded. Used as the lower bound for link quality normalization.
-const RSSI_MIN: i16 = -120;
-
-/// Maximum RSSI value for very strong signals (in dBm)
-///
-/// Represents a signal very close to the receiver with maximum strength.
-/// Used as the upper bound for link quality normalization.
-const RSSI_MAX: i16 = -30;
-
-/// Minimum SNR value for decodable signals (in dB)
-///
-/// Can be negative for LoRa due to spread spectrum processing gain.
-/// Used as the lower bound for SNR normalization.
-const SNR_MIN: i16 = -20;
-
-/// Maximum SNR value for very clean signals (in dB)
-///
-/// Represents a signal with minimal noise and interference.
-/// Used as the upper bound for SNR normalization.
-const SNR_MAX: i16 = 10;
-
-/// Normalizes a value to a 0-63 scale based on defined min/max bounds
-///
-/// Clamps the input value within the specified range and linearly scales it
-/// to the 0-63 output range. Values below `min` result in 0, values above
-/// `max` result in 63.
-///
-/// # Arguments
-/// * `value` - The input value to normalize (e.g., -90 for RSSI)
-/// * `min` - The bottom of the input range (e.g., -120 for RSSI_MIN)
-/// * `max` - The top of the input range (e.g., -30 for RSSI_MAX)
-///
-/// # Returns
-/// A u8 value in the range 0-63 representing the normalized quality
-///
-/// # Example
-/// ```rust
-/// use moonblokz_radio_lib::normalize;
-///
-/// // RSSI of -90 dBm (between -120 and -30 range)
-/// let quality = normalize(-90, -120, -30);
-/// assert!(quality > 0 && quality < 63);
-///
-/// // Value below minimum
-/// let quality = normalize(-150, -120, -30);
-/// assert_eq!(quality, 0);
-///
-/// // Value above maximum
-/// let quality = normalize(-20, -120, -30);
-/// assert_eq!(quality, 63);
-/// ```
-pub fn normalize(value: i16, min: i16, max: i16) -> u8 {
-    // 1. Clamp the value to ensure it's within the defined range.
-    let clamped_value = value.max(min).min(max);
-
-    // 2. Shift the range to start at 0.
-    let shifted_value = clamped_value - min;
-
-    // 3. Scale the value to the 0-63 range using integer arithmetic.
-    // We multiply by 63 first to maintain precision before the division.
-    let scaled_value = (shifted_value as u32 * 63) / (max - min) as u32;
-
-    scaled_value as u8
-}
-
-/// Calculates combined link quality from RSSI and SNR measurements
-///
-/// Combines Received Signal Strength Indicator (RSSI) and Signal-to-Noise Ratio (SNR)
-/// into a single quality metric on a 0-63 scale. The calculation uses a weighted average
-/// favoring SNR (70%) over RSSI (30%) since SNR is a better indicator of link reliability.
-///
-/// The quality score is used by the relay manager to track connection quality between
-/// nodes and make intelligent routing decisions.
-///
-/// # Arguments
-/// * `rssi` - Raw RSSI value in dBm (typically -120 to -30)
-/// * `snr` - Raw SNR value in dB (typically -20 to 10)
-///
-/// # Returns
-/// A u8 link quality score in the range 0-63
-/// - 0: Unusable link (very poor signal)
-/// - 63: Excellent link (strong signal and low noise)
-///
-/// # Algorithm
-/// 1. Normalize RSSI to 0-63 scale using RSSI_MIN/RSSI_MAX bounds
-/// 2. Normalize SNR to 0-63 scale using SNR_MIN/SNR_MAX bounds
-/// 3. Calculate weighted average: (30% × RSSI + 70% × SNR)
-///
-/// # Example
-/// ```rust
-/// use moonblokz_radio_lib::calculate_link_quality;
-///
-/// // Good signal with decent SNR
-/// let quality = calculate_link_quality(-70, 5);
-/// assert!(quality > 40); // Should be in "good" range
-///
-/// // Weak signal with poor SNR
-/// let quality = calculate_link_quality(-110, -15);
-/// assert!(quality < 20); // Should be in "poor" range
-/// ```
-pub fn calculate_link_quality(rssi: i16, snr: i16) -> u8 {
-    // 1. Normalize both RSSI and SNR to a common 0-63 scale.
-    let norm_rssi = normalize(rssi, RSSI_MIN, RSSI_MAX);
-    let norm_snr = normalize(snr, SNR_MIN, SNR_MAX);
-
-    // 2. Calculate the weighted average using integer math.
-    // Weights: 7 for SNR, 3 for RSSI. Total weight is 10.
-    // We use u32 for the intermediate calculation to prevent overflow.
-    let quality = (3 * norm_rssi as u32 + 7 * norm_snr as u32) / 10;
-
-    // The result is guaranteed to be in the 0-63 range.
-    quality as u8
 }
 
 #[cfg(all(test, feature = "std"))]
@@ -1399,58 +1271,6 @@ mod tests {
         assert_eq!(sm.matrix[1][2], 3);
         assert_eq!(sm.matrix[1][3], 4);
         assert_eq!(sm.matrix[2][3], 1);
-    }
-
-    // ============================================================================
-    // Link Quality Calculation Tests
-    // ============================================================================
-
-    #[test]
-    fn test_normalize_within_bounds() {
-        let rssi = -75i16;
-        let quality = normalize(rssi, -120, -30);
-        assert!(quality > 0 && quality < 63);
-        assert!(quality > 20 && quality < 50);
-    }
-
-    #[test]
-    fn test_normalize_below_minimum() {
-        let quality = normalize(-150, -120, -30);
-        assert_eq!(quality, 0);
-    }
-
-    #[test]
-    fn test_normalize_above_maximum() {
-        let quality = normalize(-20, -120, -30);
-        assert_eq!(quality, 63);
-    }
-
-    #[test]
-    fn test_calculate_link_quality_strong_signal() {
-        let quality = calculate_link_quality(-40, 8);
-        assert!(quality > 50);
-    }
-
-    #[test]
-    fn test_calculate_link_quality_weak_signal() {
-        let quality = calculate_link_quality(-115, -18);
-        assert!(quality < 15);
-    }
-
-    #[test]
-    fn test_calculate_link_quality_deterministic() {
-        let q1 = calculate_link_quality(-80, 0);
-        let q2 = calculate_link_quality(-80, 0);
-        assert_eq!(q1, q2);
-    }
-
-    #[test]
-    fn test_rssi_snr_extreme_values() {
-        let q1 = calculate_link_quality(i16::MIN, i16::MIN);
-        assert_eq!(q1, 0);
-
-        let q2 = calculate_link_quality(i16::MAX, i16::MAX);
-        assert_eq!(q2, 63);
     }
 
     // ============================================================================

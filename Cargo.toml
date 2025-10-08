@@ -1,7 +1,7 @@
 [package]
 name = "moonblokz-radio-lib"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 embassy-sync = { version = "0.7"}
@@ -20,8 +20,11 @@ critical-section = { version = "1.2.0", features = ["std"],optional = true}
 
 [features]
 # Different memory configurations for embedded devices with varying RAM sizes.
+# The module requires about 25KB of RAM
 memory-config-small = []
+# The module requires about 60KB of RAM
 memory-config-medium = []
+# The module requires about 120KB of RAM
 memory-config-large = []
 
 #Enables packet level software CRC checking (16 bit) in radio module.
@@ -34,7 +37,7 @@ default = ["radio-device-echo","memory-config-large"]
 std=["embassy-executor/arch-std","embassy-executor/executor-thread","embassy-time/std","embassy-sync/std","critical-section/std"]
 embedded=["embassy-executor/executor-thread","embassy-executor/arch-cortex-m","embassy-executor/executor-interrupt","dep:embassy-rp","dep:embedded-hal-bus","dep:lora-phy"]
 radio-device-echo = ["std"]
-radio-device-lora-sx1262 = ["embedded","soft-packet-crc"]
+radio-device-rp-lora-sx1262 = ["embedded","soft-packet-crc"]
 radio-device-simulator = ["std"]
 
 [dev-dependencies]

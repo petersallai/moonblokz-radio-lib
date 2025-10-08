@@ -4,8 +4,6 @@
 #![no_std]
 #![no_main]
 
-mod panic;
-
 use embassy_futures::select::{select, Either};
 use lora_phy::sx126x::TcxoCtrlVoltage;
 use rp_usb_console;
@@ -19,7 +17,7 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 use lora_phy::mod_params::{Bandwidth, CodingRate, SpreadingFactor};
-use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
+use moonblokz_radio_lib::radio_devices::rp_lora_sx1262::RadioDevice;
 use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
 
@@ -28,6 +26,16 @@ const SEND_MESSAGE_INTERVAL_SECS: u64 = 60; // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
+
+use core::panic::PanicInfo;
+
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    // Break into debugger if attached, then spin.
+    loop {
+        cortex_m::asm::bkpt();
+    }
+}
 
 #[embassy_executor::task]
 async fn command_task(command_receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>) {
@@ -46,7 +54,7 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     //let _driver = Driver::new(p.USB, Irqs);
     //  spawner.spawn(logger_task(driver)).unwrap();
-    rp_usb_console::start(spawner, log::LevelFilter::Info, p.USB, Some(COMMAND_CHANNEL.sender()));
+    rp_usb_console::start(spawner, log::LevelFilter::Trace, p.USB, Some(COMMAND_CHANNEL.sender()));
 
     spawner.spawn(command_task(COMMAND_CHANNEL.receiver())).unwrap();
 
@@ -101,6 +109,7 @@ async fn main(spawner: Spawner) {
                 SpreadingFactor::_7,
                 Bandwidth::_250KHz,
                 CodingRate::_4_5,
+                own_node_id,
             )
             .await
             .is_err()
@@ -127,6 +136,7 @@ async fn main(spawner: Spawner) {
                 SpreadingFactor::_7,
                 Bandwidth::_250KHz,
                 CodingRate::_4_5,
+                own_node_id,
             )
             .await
             .is_err()

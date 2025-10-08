@@ -58,7 +58,12 @@
 //! - Optional: ANT_SW (antenna switch control)
 //! - DMA channels for TX and RX operations
 
+use crate::calculate_link_quality;
 use crate::MessageType;
+use crate::RadioPacket;
+use crate::ReceivedPacket;
+use crate::RxPacketQueueSender;
+use crate::TxPacketQueueReceiver;
 /// LoRa SX1262 Radio Device Implementation
 ///
 /// This module provides a complete radio device implementation for the SX1262 LoRa transceiver,
@@ -75,7 +80,7 @@ use crate::MessageType;
 ///
 /// # Example
 /// ```rust,no_run
-/// use moonblokz_radio_lib::radio_device_lora_sx1262::{RadioDevice, RadioConfig};
+/// use moonblokz_radio_lib::radio_device_rp_lora_sx1262::{RadioDevice, RadioConfig};
 /// use embassy_rp::peripherals::{PIN_10, PIN_11, PIN_12};
 ///
 /// let mut radio = RadioDevice::new();
@@ -95,24 +100,19 @@ use crate::MessageType;
 /// };
 /// ```
 use crate::RADIO_PACKET_SIZE;
-use crate::RadioPacket;
-use crate::ReceivedPacket;
-use crate::RxPacketQueueSender;
-use crate::TxPacketQueueReceiver;
-use crate::calculate_link_quality;
 
-use embassy_futures::select::{Either, select};
-use embassy_rp::Peri;
+use embassy_futures::select::{select, Either};
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::spi::{Config, Spi};
+use embassy_rp::Peri;
 use embassy_time::Delay;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
-use lora_phy::LoRa;
 use lora_phy::iv::GenericSx126xInterfaceVariant;
 use lora_phy::sx126x::TcxoCtrlVoltage;
-use lora_phy::sx126x::{Sx126x, Sx1262};
+use lora_phy::sx126x::{Sx1262, Sx126x};
+use lora_phy::LoRa;
 use lora_phy::{mod_params::*, sx126x};
 use rand_core::RngCore;
 use rand_core::SeedableRng;
@@ -155,28 +155,6 @@ pub enum RadioDeviceInitError {
     RXPacketParamsError,
 }
 
-#[cfg(feature = "std")]
-impl std::fmt::Display for RadioDeviceInitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RadioDeviceInitError::InterfaceError => write!(f, "failed to create SX126x interface variant"),
-            RadioDeviceInitError::LoraError => write!(f, "failed to initialize LoRa PHY layer"),
-            RadioDeviceInitError::ModulationParamsError => write!(f, "failed to create modulation parameters"),
-            RadioDeviceInitError::TXPacketParamsError => write!(f, "failed to create TX packet parameters"),
-            RadioDeviceInitError::RXPacketParamsError => write!(f, "failed to create RX packet parameters"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for RadioDeviceInitError {}
-
-/// Internal radio device errors
-///
-/// These errors represent failures during radio operations. Unlike
-/// `RadioDeviceInitError`, these occur during runtime operation rather
-/// than initialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RadioDeviceError {
     /// Device was not initialized before attempting an operation
     InitializationFailed,
@@ -189,22 +167,6 @@ enum RadioDeviceError {
     /// Received packet failed CRC verification (soft-packet-crc feature)
     CRCMismatch,
 }
-
-#[cfg(feature = "std")]
-impl std::fmt::Display for RadioDeviceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RadioDeviceError::InitializationFailed => write!(f, "device not initialized"),
-            RadioDeviceError::TransmissionFailed => write!(f, "packet transmission failed"),
-            RadioDeviceError::ReceiveFailed => write!(f, "packet reception failed"),
-            RadioDeviceError::CADFailed => write!(f, "channel activity detection failed"),
-            RadioDeviceError::CRCMismatch => write!(f, "packet CRC verification failed"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for RadioDeviceError {}
 
 /// Calculate CRC-16-CCITT for packet integrity checking
 ///
@@ -288,13 +250,14 @@ enum RadioDeviceState {
 /// * `radio_device` - Initialized RadioDevice instance
 /// * `tx_receiver` - Channel receiver for outgoing packets
 /// * `rx_sender` - Channel sender for incoming packets
+/// * `own_node_id` - This node's unique identifier for logging
 /// * `rng_seed` - Seed for random number generator (used for CAD backoff)
 ///
 /// # Behavior
 /// - Continuously races between RX and TX operations
 /// - On RX: Receives packet and forwards to RX queue (drops if full)
 /// - On TX: Performs CAD, waits if channel busy, transmits when clear
-/// - Logs packet details at trace level for debugging
+/// - Logs packet details at trace level for debugging with node identification
 /// - Never returns (runs until executor stops)
 ///
 /// # CAD Backoff
@@ -302,8 +265,14 @@ enum RadioDeviceState {
 /// random duration up to CAD_MAX_ADDITIONAL_WAIT_TIME before retrying.
 #[cfg_attr(feature = "std", embassy_executor::task(pool_size = 100))]
 #[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
-pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, rng_seed: u64) -> ! {
-    radio_device.run(tx_receiver, rx_sender, rng_seed).await
+pub async fn radio_device_task(
+    mut radio_device: RadioDevice,
+    tx_receiver: TxPacketQueueReceiver,
+    rx_sender: RxPacketQueueSender,
+    own_node_id: u32,
+    rng_seed: u64,
+) -> ! {
+    radio_device.run(tx_receiver, rx_sender, own_node_id, rng_seed).await
 }
 
 /// LoRa SX1262 Radio Device
@@ -328,7 +297,7 @@ impl RadioDevice {
     ///
     /// # Examples
     /// ```rust
-    /// use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
+    /// use moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice;
     ///
     /// let radio = RadioDevice::new();
     /// assert!(!radio.is_initialized());
@@ -358,6 +327,7 @@ impl RadioDevice {
     /// * `tx_dma` - DMA channel for SPI transmit
     /// * `rx_dma` - DMA channel for SPI receive
     /// * `lora_frequency_in_hz` - LoRa carrier frequency in Hz (e.g., 915_000_000)
+    /// * `own_node_id` - This node's unique identifier for logging
     ///
     /// # Returns
     /// * `Ok(())` if initialization succeeds
@@ -365,8 +335,8 @@ impl RadioDevice {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # async fn example() -> Result<(), moonblokz_radio_lib::radio_device_lora_sx1262::RadioDeviceInitError> {
-    /// use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
+    /// # async fn example() -> Result<(), moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDeviceInitError> {
+    /// use moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice;
     /// use embassy_rp::peripherals::{PIN_10, PIN_11, PIN_12};
     ///
     /// let mut radio = RadioDevice::new();
@@ -396,6 +366,7 @@ impl RadioDevice {
         spreading_factor: SpreadingFactor,
         bandwidth: Bandwidth,
         coding_rate: CodingRate,
+        own_node_id: u32,
     ) -> Result<(), RadioDeviceInitError> {
         let spi_nss = Output::new(spi_nss_pin, Level::High);
         let reset = Output::new(reset_pin, Level::High);
@@ -406,7 +377,7 @@ impl RadioDevice {
         } else {
             None
         };
-
+        log::trace!("[{}] Initializing spi_device", own_node_id);
         let spi = Spi::new(spi, clk_pin, mosi_pin, miso_pin, tx_dma, rx_dma, Config::default());
         let spi_device = match ExclusiveDevice::new(spi, spi_nss, Delay) {
             Ok(device) => device,
@@ -421,6 +392,8 @@ impl RadioDevice {
             use_dcdc: true,
             rx_boost: false,
         };
+
+        log::trace!("[{}] Initializing interface variant", own_node_id);
         let iv = match GenericSx126xInterfaceVariant::new(reset, dio1, busy, None, None) {
             Ok(interface) => interface,
             Err(_err) => {
@@ -428,6 +401,7 @@ impl RadioDevice {
             }
         };
 
+        log::trace!("[{}] Initializing LoRa instance", own_node_id);
         let mut lora = match LoRa::new(Sx126x::new(spi_device, iv, config), false, Delay).await {
             Ok(lora_instance) => lora_instance,
             Err(_err) => {
@@ -435,6 +409,7 @@ impl RadioDevice {
             }
         };
 
+        log::trace!("[{}] Initializing modulation parameters", own_node_id);
         let mdltn_params = {
             match lora.create_modulation_params(spreading_factor, bandwidth, coding_rate, lora_frequency_in_hz) {
                 Ok(mp) => mp,
@@ -443,6 +418,8 @@ impl RadioDevice {
                 }
             }
         };
+
+        log::trace!("[{}] Initializing TX packet parameters", own_node_id);
         let tx_pkt_params = {
             match lora.create_tx_packet_params(8, false, true, false, &mdltn_params) {
                 Ok(pp) => pp,
@@ -452,6 +429,7 @@ impl RadioDevice {
             }
         };
 
+        log::trace!("[{}] Initializing RX packet parameters", own_node_id);
         let rx_pkt_params = {
             #[cfg(feature = "soft-packet-crc")]
             let rx_buffer_size = (RADIO_PACKET_SIZE + 2) as u8;
@@ -473,7 +451,7 @@ impl RadioDevice {
             tx_pkt_params,
             rx_pkt_params,
         };
-
+        log::debug!("[{}] Radio device initialized successfully", own_node_id);
         Ok(())
     }
 
@@ -486,6 +464,7 @@ impl RadioDevice {
     /// # Parameters
     /// * `tx_receiver` - Channel receiver for outgoing packets from TX scheduler
     /// * `rx_sender` - Channel sender for incoming packets to RX handler
+    /// * `own_node_id` - This node's unique identifier for logging
     /// * `rng_seed` - Seed for random number generator (used for backoff timing)
     ///
     /// # Returns
@@ -507,52 +486,67 @@ impl RadioDevice {
     /// - RX queue full: Drop packet and log warning
     /// - TX failure: Log error and continue
     /// - CAD failure: Wait and retry
-    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, rng_seed: u64) -> ! {
+    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32, rng_seed: u64) -> ! {
         let mut rng = WyRand::seed_from_u64(rng_seed);
         loop {
             // Race between receiving a packet and getting a TX request
-            match select(self.receive_packet(), tx_receiver.receive()).await {
+            match select(self.receive_packet(own_node_id), tx_receiver.receive()).await {
                 Either::First(rx_result) => match rx_result {
                     Ok(rx_packet) => {
                         if rx_packet.packet.message_type() == MessageType::AddBlock as u8
                             || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
                         {
                             log::trace!(
-                                "Received RX packet: type: {}, sender: {}, seq: {}, length: {}, packet: {}/{}",
+                                "[{}] Received RX packet: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                                own_node_id,
                                 rx_packet.packet.message_type(),
-                                rx_packet.packet.sender_node_id(),
                                 rx_packet.packet.sequence().unwrap_or(0),
                                 rx_packet.packet.length,
                                 rx_packet.packet.packet_index() + 1,
                                 rx_packet.packet.total_packet_count(),
                             );
                         } else {
-                            log::trace!(
-                                "Received RX packet: type: {}, sender: {}, length: {}, link_quality: {}",
-                                rx_packet.packet.message_type(),
-                                rx_packet.packet.sender_node_id(),
-                                rx_packet.packet.length,
-                                rx_packet.link_quality
-                            );
+                            if rx_packet.packet.message_type() == MessageType::AddBlock as u8
+                                || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
+                            {
+                                log::debug!(
+                                    "[{}] Packet received: type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
+                                    own_node_id,
+                                    rx_packet.packet.message_type(),
+                                    rx_packet.packet.sequence().unwrap_or(0),
+                                    rx_packet.packet.length,
+                                    rx_packet.packet.packet_index() + 1,
+                                    rx_packet.packet.total_packet_count(),
+                                    rx_packet.link_quality
+                                );
+                            } else {
+                                log::debug!(
+                                    "[{}] Packet received: type: {}, length: {}, link quality: {}",
+                                    own_node_id,
+                                    rx_packet.packet.message_type(),
+                                    rx_packet.packet.length,
+                                    rx_packet.link_quality
+                                );
+                            }
                         }
 
                         if rx_sender.try_send(rx_packet).is_err() {
-                            log::warn!("RX queue full, dropping received packet.");
+                            log::warn!("[{}] RX queue full, dropping received packet.", own_node_id);
                         }
                     }
                     Err(RadioDeviceError::CRCMismatch) => {
-                        log::debug!("Dropping packet due to CRC mismatch");
+                        log::debug!("[{}] Dropping packet due to CRC mismatch", own_node_id);
                     }
                     Err(_e) => {
-                        log::warn!("Receive error from radio device");
+                        log::warn!("[{}] Receive error from radio device", own_node_id);
                     }
                 },
                 Either::Second(tx_packet) => {
                     if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8 {
                         log::trace!(
-                            "Transmitting TX packet: type: {}, sender: {}, seq: {}, length: {}, packet: {}/{}",
+                            "[{}] Transmitting TX packet: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                            own_node_id,
                             tx_packet.message_type(),
-                            tx_packet.sender_node_id(),
                             tx_packet.sequence().unwrap_or(0),
                             tx_packet.length,
                             tx_packet.packet_index() + 1,
@@ -560,38 +554,56 @@ impl RadioDevice {
                         );
                     } else {
                         log::trace!(
-                            "Transmitting TX packet: type: {}, sender: {}, length: {}",
+                            "[{}] Transmitting TX packet: type: {}, length: {}",
+                            own_node_id,
                             tx_packet.message_type(),
-                            tx_packet.sender_node_id(),
                             tx_packet.length
                         );
                     }
                     // Transmit the packet once: wait for a clear channel, then send and break
                     loop {
-                        log::trace!("Starting CAD before transmit");
-                        match select(self.do_cad(), Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS))).await {
+                        log::trace!("[{}] Starting CAD before transmit", own_node_id);
+                        match select(self.do_cad(own_node_id), Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS))).await {
                             Either::First(Ok(false)) => {
                                 // Channel is clear; attempt a single send then exit loop
-                                log::trace!("Channel clear, transmitting packet");
-                                if self.send_packet(&tx_packet).await.is_err() {
-                                    log::error!("Failed to transmit packet");
+                                log::trace!("[{}] Channel clear, transmitting packet", own_node_id);
+                                if self.send_packet(&tx_packet, own_node_id).await.is_err() {
+                                    log::warn!("[{}] Failed to transmit packet: type: {}", own_node_id, tx_packet.message_type());
                                 } else {
-                                    log::trace!("Packet transmitted successfully");
+                                    if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8
+                                    {
+                                        log::debug!(
+                                            "[{}] Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                                            own_node_id,
+                                            tx_packet.message_type(),
+                                            tx_packet.sequence().unwrap_or(0),
+                                            tx_packet.length,
+                                            tx_packet.packet_index() + 1,
+                                            tx_packet.total_packet_count(),
+                                        );
+                                    } else {
+                                        log::debug!(
+                                            "[{}] Packet transmitted: type: {}, length: {}",
+                                            own_node_id,
+                                            tx_packet.message_type(),
+                                            tx_packet.length
+                                        );
+                                    }
                                 }
                                 break;
                             }
                             Either::First(Ok(true)) => {
-                                log::trace!("Channel busy, waiting before retry");
+                                log::trace!("[{}] Channel busy, waiting before retry", own_node_id);
                                 let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                             Either::First(Err(_)) => {
-                                log::trace!("CAD error, waiting before retry");
+                                log::trace!("[{}] CAD error, waiting before retry", own_node_id);
                                 let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                             Either::Second(_) => {
-                                log::trace!("CAD timeout, waiting before retry");
+                                log::trace!("[{}] CAD timeout, waiting before retry", own_node_id);
                                 let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
@@ -608,7 +620,8 @@ impl RadioDevice {
     /// The transmit enable pin (if configured) is automatically managed during transmission.
     ///
     /// # Parameters
-    /// * `message` - The radio packet to transmit
+    /// * `packet` - The radio packet to transmit
+    /// * `own_node_id` - This node's unique identifier for logging
     ///
     /// # Returns
     /// * `Ok(())` if transmission succeeds
@@ -617,12 +630,12 @@ impl RadioDevice {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice, packet: &moonblokz_radio_lib::RadioPacket) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
-    /// radio.send_message(packet).await?;
+    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice, packet: &moonblokz_radio_lib::RadioPacket, own_node_id: u32) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
+    /// radio.send_packet(packet, own_node_id).await?;
     /// # Ok(())
     /// # }
     /// ```
-    async fn send_packet(&mut self, packet: &RadioPacket) -> Result<(), RadioDeviceError> {
+    async fn send_packet(&mut self, packet: &RadioPacket, own_node_id: u32) -> Result<(), RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -650,7 +663,6 @@ impl RadioDevice {
                     output_buffer[packet.length..packet.length + 2].copy_from_slice(&crc.to_le_bytes());
 
                     let slice = &output_buffer[..packet.length + 2];
-                    log::trace!("Calculated CRC-16: {:04X}", crc);
 
                     match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice).await {
                         Ok(()) => {}
@@ -691,21 +703,24 @@ impl RadioDevice {
     /// from the first few bytes. DOS protection is not required in this use-case,
     /// because the bottleneck here is the LoRa network's speed.
     ///
+    /// # Parameters
+    /// * `own_node_id` - This node's unique identifier for logging
+    ///
     /// # Returns
-    /// * `Ok(RadioPacket)` containing the received data and metadata
+    /// * `Ok(ReceivedPacket)` containing the received data and metadata
     /// * `Err(RadioDeviceError::InitializationFailed)` if device is not initialized
     /// * `Err(RadioDeviceError::ReceiveFailed)` if receive preparation fails
     /// * `Err(RadioDeviceError::TransmissionFailed)` if receive operation fails
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
-    /// let packet = radio.receive_message().await?;
-    /// println!("Received {} bytes", packet.length);
+    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice, own_node_id: u32) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
+    /// let packet = radio.receive_packet(own_node_id).await?;
+    /// println!("Received {} bytes", packet.packet.length);
     /// # Ok(())
     /// # }
     /// ```
-    async fn receive_packet(&mut self) -> Result<ReceivedPacket, RadioDeviceError> {
+    async fn receive_packet(&mut self, own_node_id: u32) -> Result<ReceivedPacket, RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -725,6 +740,13 @@ impl RadioDevice {
                 };
                 match lora.rx(rx_pkt_params, &mut self.receive_buffer).await {
                     Ok((rx_len, packet_status)) => {
+                        log::trace!(
+                            "[{}] Received packet: length={}, rssi={}, snr={}",
+                            own_node_id,
+                            rx_len,
+                            packet_status.rssi,
+                            packet_status.snr
+                        );
                         // Create RadioPacket from received data
                         let mut data = [0u8; RADIO_PACKET_SIZE];
                         if rx_len > (RADIO_PACKET_SIZE + 2) as u8 {
@@ -744,7 +766,8 @@ impl RadioDevice {
 
                             if received_crc != calculated_crc {
                                 log::trace!(
-                                    "CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
+                                    "[{}] CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
+                                    own_node_id,
                                     received_crc,
                                     calculated_crc
                                 );
@@ -780,6 +803,9 @@ impl RadioDevice {
     /// CAD is used to detect if there is any LoRa activity on the configured channel
     /// before transmitting, helping to avoid collisions in shared spectrum.
     ///
+    /// # Parameters
+    /// * `own_node_id` - This node's unique identifier for logging
+    ///
     /// # Returns
     /// * `Ok(true)` if channel activity is detected
     /// * `Ok(false)` if no channel activity is detected
@@ -788,15 +814,15 @@ impl RadioDevice {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
-    /// let channel_busy = radio.do_cad().await?;
+    /// # async fn example(radio: &mut moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice, own_node_id: u32) -> Result<(), moonblokz_radio_lib::RadioDeviceError> {
+    /// let channel_busy = radio.do_cad(own_node_id).await?;
     /// if !channel_busy {
     ///     // Safe to transmit
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    async fn do_cad(&mut self) -> Result<bool, RadioDeviceError> {
+    async fn do_cad(&mut self, own_node_id: u32) -> Result<bool, RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -820,7 +846,7 @@ impl RadioDevice {
     ///
     /// # Examples
     /// ```rust
-    /// use moonblokz_radio_lib::radio_device_lora_sx1262::RadioDevice;
+    /// use moonblokz_radio_lib::radio_device_rp_lora_sx1262::RadioDevice;
     ///
     /// let radio = RadioDevice::new();
     /// assert!(!radio.is_initialized());

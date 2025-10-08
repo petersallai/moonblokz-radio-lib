@@ -68,6 +68,7 @@ use log::{Level, log};
 /// * `radio_device` - RadioDevice instance (zero-sized, stateless)
 /// * `tx_receiver` - Channel receiver for outgoing packets
 /// * `rx_sender` - Channel sender for incoming (echoed) packets
+/// * `own_node_id` - This node's unique identifier for logging
 /// * `_rng_seed` - Unused random seed (kept for API compatibility)
 ///
 /// # Task Pool
@@ -78,11 +79,17 @@ use log::{Level, log};
 /// - Receives packets from TX queue (blocking)
 /// - Forwards them to RX queue with link quality = 63 (maximum)
 /// - Drops packets if RX queue is full (backpressure handling)
-/// - Logs warnings when packets are dropped
+/// - Logs warnings when packets are dropped with node identification
 #[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
-pub(crate) async fn radio_device_task(mut radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, _rng_seed: u64) -> ! {
-    log!(Level::Info, "Echo radio device task started");
-    radio_device.run(tx_receiver, rx_sender).await
+pub async fn radio_device_task(
+    mut radio_device: RadioDevice,
+    tx_receiver: TxPacketQueueReceiver,
+    rx_sender: RxPacketQueueSender,
+    own_node_id: u32,
+    _rng_seed: u64,
+) -> ! {
+    log!(Level::Info, "[{}] Echo radio device task started", own_node_id);
+    radio_device.run(tx_receiver, rx_sender, own_node_id).await
 }
 
 /// Echo radio device - loopback implementation for testing
@@ -150,16 +157,18 @@ impl RadioDevice {
     /// If the RX queue is full, the echoed packet is dropped and a warning
     /// is logged showing the message type. This prevents deadlock when the
     /// receiver cannot keep up with transmission rate.
-    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender) -> ! {
+    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32) -> ! {
         loop {
             let packet = tx_receiver.receive().await;
+            log::trace!("[{}] Echoing packet: type {}", own_node_id, packet.message_type());
             match rx_sender.try_send(crate::ReceivedPacket { packet, link_quality: 63 }) {
                 Ok(_) => {}
                 Err(embassy_sync::channel::TrySendError::Full(received_packet)) => {
                     // Backpressure: drop echoed packet and log
                     log!(
                         Level::Warn,
-                        "RX queue full, dropping echoed packet. type: {}",
+                        "[{}] RX queue full, dropping echoed packet. type: {}",
+                        own_node_id,
                         received_packet.packet.message_type()
                     );
                 }

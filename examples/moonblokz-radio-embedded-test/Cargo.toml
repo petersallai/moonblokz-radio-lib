@@ -8,6 +8,17 @@ homepage="https://www.moonblokz.com"
 autotests = false
 autobenches = false
 
+[features]
+default = ["log-trace"]
+# Log level features using log crate's built-in compile-time filtering
+# Note: Only one of these should be enabled at a time
+log-trace = ["log/max_level_trace"]
+log-debug = ["log/max_level_debug"] 
+log-info = ["log/max_level_info"]
+log-warn = ["log/max_level_warn"]
+log-error = ["log/max_level_error"]
+log-off = ["log/max_level_off"]
+
 [[bin]]
 name = "moonblokz-radio-embedded-test"
 path = "src/main.rs"
@@ -31,7 +42,7 @@ lora-phy = { git = "https://github.com/lora-rs/lora-rs.git", default-features = 
 log = "0.4"
 
 rp-usb-console = { version = "0.2"}
-moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-lora-sx1262","memory-config-large"] }
+moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-rp-lora-sx1262","memory-config-large"] }
 
 heapless = "0.9"
 

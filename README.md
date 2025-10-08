@@ -48,40 +48,11 @@ Nodes utilize multiple parameters for fine-tuning the algorithm. There are a few
 
 If the nodes are separated into groups, divergent chains can be formed. The consensus algorithm limits it. Sooner or later, all sub-groups reach a state where the deterministic chain creator selection logic selects a node that is not in that subgroup. In that case, an approval process begins, and it will likely only succeed in the sub-group that has more than half of the active nodes. If two sub-groups connect, all nodes query all the block variants (through the request_block logic), and creators always select the heaviest chain variants (the weight of the block is 1, except the evidence block for support messages, where the weight equals to the number of the support messages).
 
-## Testing
-
-The project includes comprehensive unit tests covering link quality calculations, scoring matrices, message handling, and more.
-
-### Running Tests
-
-```bash
-# Run all tests (recommended)
-cargo test-echo
-
-# Or use the full command
-cargo test --lib --no-default-features --features std,radio-device-echo
-```
-
-**Note:** Tests must be run with `--no-default-features` to avoid dependency conflicts. The `radio-device-echo` feature is required because tests use the RadioCommunicationManager.
-
-For detailed testing information, see [TESTING.md](TESTING.md).
-
-### Test Coverage
-
-- **57+ tests** covering:
-  - Link quality calculations (RSSI/SNR normalization)
-  - Scoring matrix encoding/decoding
-  - Message creation and parsing
-  - Connection matrix type aliases
-  - Edge cases and boundary conditions
-  - CRC/checksum integrity
-  - Constants validation
-
 ## Features
 
 - `std` - Standard library support (required for tests)
 - `embedded` - Embedded system support with static allocation
 - `radio-device-echo` - Simple echo device for testing
-- `radio-device-lora-sx1262` - LoRa SX1262 hardware support (default)
+- `radio-device-rp-lora-sx1262` - LoRa SX1262 hardware support (default)
 - `radio-device-simulator` - Network simulator for testing
 - `soft-packet-crc` - Software CRC for packet validation

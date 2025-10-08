@@ -66,6 +66,7 @@ pub(crate) async fn tx_scheduler_task(
     delay_between_packets: u16,
     delay_between_messages: u8,
     tx_maximum_random_delay: u16,
+    own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
     let mut rng = WyRand::seed_from_u64(rng_seed);
@@ -73,7 +74,7 @@ pub(crate) async fn tx_scheduler_task(
     let mut rx_state_delay_timeout = Instant::now();
     let delay_between_messages_duration = Duration::from_secs(delay_between_messages as u64);
     let delay_between_packets_duration = Duration::from_millis(delay_between_packets as u64);
-    log!(log::Level::Info, "TX scheduler task started");
+    log!(log::Level::Info, "[{}] TX scheduler task started", own_node_id);
     loop {
         match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {
             Either::First(message) => {
@@ -100,28 +101,45 @@ pub(crate) async fn tx_scheduler_task(
                 let packet_count = message.get_packet_count();
                 log!(
                     log::Level::Trace,
-                    "Sending message to radio device: type: {}, packet count: {}",
+                    "[{}] Sending message to radio device: type: {}, packet count: {}",
+                    own_node_id,
                     message.message_type(),
                     packet_count
                 );
                 for i in 0..packet_count {
                     // Get the packet to send
-                    //                    log!(log::Level::Debug, "Sending packet {}/{}", i + 1, packet_count);
                     if let Some(packet) = message.get_packet(i) {
                         // Attempt to send the packet to the radio device
                         match radio_device_sender.try_send(packet) {
                             Ok(_) => {
                                 // Successfully sent the packet, update last transmission time
                                 last_tx_time = Instant::now();
-                                log!(log::Level::Trace, "Sent packet to radio device: packet: {}/{}", i + 1, packet_count);
+                                log!(
+                                    log::Level::Trace,
+                                    "[{}] Sent packet to radio device: packet: {}/{}",
+                                    own_node_id,
+                                    i + 1,
+                                    packet_count
+                                );
                             }
                             Err(embassy_sync::channel::TrySendError::Full(packet)) => {
-                                log!(log::Level::Warn, "TX packet queue full, dropping packet. type: {}", packet.message_type());
+                                log!(
+                                    log::Level::Warn,
+                                    "[{}] TX packet queue full, dropping packet. type: {}",
+                                    own_node_id,
+                                    packet.message_type()
+                                );
                             }
                         }
                         Timer::after(delay_between_packets_duration).await;
                     } else {
-                        log!(log::Level::Error, "Failed to get packet {}/{} from message", i, message.get_packet_count());
+                        log!(
+                            log::Level::Error,
+                            "[{}] Failed to get packet {}/{} from message",
+                            own_node_id,
+                            i,
+                            message.get_packet_count()
+                        );
                     }
                 }
             }
@@ -132,7 +150,8 @@ pub(crate) async fn tx_scheduler_task(
                     rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
                     log!(
                         log::Level::Debug,
-                        "Multi-packet RX in progress: packet {}/{}, TX delayed for: {} ms",
+                        "[{}] Multi-packet RX in progress: packet {}/{}, TX delayed for: {} ms",
+                        own_node_id,
                         packet_index,
                         total_packet_count,
                         (rx_state_delay_timeout - Instant::now()).as_millis()
@@ -140,7 +159,7 @@ pub(crate) async fn tx_scheduler_task(
                 }
                 RxState::PacketedRxEnded => {
                     rx_state_delay_timeout = Instant::now();
-                    log!(log::Level::Debug, "Multi-packet RX ended, clearing TX delay");
+                    log!(log::Level::Debug, "[{}] Multi-packet RX ended, clearing TX delay", own_node_id);
                 }
             },
         }

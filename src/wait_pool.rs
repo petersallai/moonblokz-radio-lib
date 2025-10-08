@@ -35,17 +35,14 @@
 
 use core::cmp::max;
 use embassy_time::{Duration, Instant};
+use log::log;
 use rand_core::{RngCore, SeedableRng};
 use rand_wyrand::WyRand;
 
 use crate::relay_manager::{ConnectionMatrix, ConnectionMatrixRow};
 use crate::{RadioMessage, RadioPacket, ScoringMatrix};
 
-/// Bitmask to extract link quality from connection matrix cells
-///
-/// Connection matrix cells store link quality in the lower 6 bits (0-63 range).
-/// Upper bits are reserved for flags.
-const QUALITY_MASK: u8 = 0b0011_1111;
+use crate::relay_manager::QUALITY_MASK;
 
 /// Categorizes a link quality value into one of four categories
 ///
@@ -236,6 +233,9 @@ pub(crate) struct WaitPool<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_
 
     /// Random number generator for jitter
     rng: WyRand,
+
+    /// This node's ID
+    own_node_id: u32,
 }
 
 impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<WAIT_POOL_SIZE, CONNECTION_MATRIX_SIZE> {
@@ -250,12 +250,13 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// # Returns
     ///
     /// A new wait pool with no messages
-    pub fn with(relay_position_delay: u64, scoring_matrix: ScoringMatrix, rng_seed: u64) -> Self {
+    pub fn with(relay_position_delay: u64, scoring_matrix: ScoringMatrix, own_node_id: u32, rng_seed: u64) -> Self {
         Self {
             items: [const { None }; WAIT_POOL_SIZE],
             relay_position_delay,
             scoring_matrix,
             rng: WyRand::seed_from_u64(rng_seed),
+            own_node_id,
         }
     }
 
@@ -314,13 +315,17 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         for item_opt in self.items.iter_mut() {
             if let Some(item) = item_opt {
                 if item.message == *message {
-                    //log!(log::Level::Debug, "[{:?}] updating(add or) waitpool item", self.own_node_id);
                     for (message_conn, sender_conn) in item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE) {
                         *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
                     }
 
                     if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                        //  log!(log::Level::Debug, "Message removed from wait pool");
+                        log!(
+                            log::Level::Trace,
+                            "[{}] Message removed from wait pool: sequence: {}",
+                            self.own_node_id,
+                            message.sequence().unwrap_or(0)
+                        );
                         *item_opt = None;
                         return true;
                     }
@@ -329,6 +334,16 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     item.activation_time = Instant::now()
                         + Duration::from_secs(position * self.relay_position_delay)
                         + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
+
+                    log!(
+                        log::Level::Trace,
+                        "[{}] updating waitpool item: sequence: {}, position: {}, activation_time: {} s",
+                        self.own_node_id,
+                        message.sequence().unwrap_or(0),
+                        position,
+                        item.activation_time.duration_since(Instant::now()).as_secs()
+                    );
+
                     return true;
                 }
             }
@@ -437,6 +452,15 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         }
 
         if min_index < WAIT_POOL_SIZE {
+            log!(
+                log::Level::Trace,
+                "[{}] adding item to waitpool: sequence: {}, position: {}, activation_time: {} s",
+                self.own_node_id,
+                new_item.message.sequence().unwrap_or(0),
+                position,
+                new_item.activation_time.duration_since(Instant::now()).as_secs()
+            );
+
             self.items[min_index] = Some(new_item);
         }
     }
@@ -486,7 +510,12 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                                 }
 
                                 if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                                    //  log!(log::Level::Debug, "Message removed from wait pool");
+                                    log!(
+                                        log::Level::Trace,
+                                        "[{}] Message removed from wait pool: sequence: {}",
+                                        self.own_node_id,
+                                        item.message.sequence().unwrap_or(0)
+                                    );
                                     *item_opt = None;
                                     return;
                                 }
@@ -495,6 +524,16 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                                 item.activation_time = Instant::now()
                                     + Duration::from_secs(position * self.relay_position_delay)
                                     + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
+
+                                log!(
+                                    log::Level::Trace,
+                                    "[{}] adding item to waitpool: sequence: {}, position: {}, activation_time: {} s",
+                                    self.own_node_id,
+                                    item.message.sequence().unwrap_or(0),
+                                    position,
+                                    item.activation_time.duration_since(Instant::now()).as_secs()
+                                );
+
                                 return;
                             }
                         }

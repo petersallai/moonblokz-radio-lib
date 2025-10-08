@@ -225,6 +225,7 @@ pub(crate) async fn rx_handler_task(
     );
 
     let mut next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
+    log!(log::Level::Info, "[{}] RX handler task started", own_node_id);
     loop {
         match select4(
             rx_packet_queue_receiver.receive(),
@@ -238,7 +239,8 @@ pub(crate) async fn rx_handler_task(
                 let rx_packet = received_packet.packet;
                 if rx_packet.total_packet_count() == 1 {
                     log::trace!(
-                        "Received single-packet message: type: {}, sender: {}, length: {}",
+                        "[{}] Received single-packet message: type: {}, sender: {}, length: {}",
+                        own_node_id,
                         rx_packet.message_type(),
                         rx_packet.sender_node_id(),
                         rx_packet.length
@@ -250,14 +252,16 @@ pub(crate) async fn rx_handler_task(
                         outgoing_message_queue_sender,
                         incoming_message_queue_sender,
                         &mut relay_manager,
+                        own_node_id,
                     );
                 } else if rx_packet.total_packet_count() == 0 {
-                    log!(Level::Warn, "Received empty packet, skipping");
+                    log!(Level::Warn, "[{}] Received empty packet, skipping", own_node_id);
                     continue;
                 } else {
                     // Handle multi-packet message
                     log::trace!(
-                        "Received multi-packet message: type: {}, sender: {}, length: {}, packet {}/{}",
+                        "[{}] Received multi-packet message: type: {}, sender: {}, length: {}, packet {}/{}",
+                        own_node_id,
                         rx_packet.message_type(),
                         rx_packet.sender_node_id(),
                         rx_packet.length,
@@ -269,8 +273,9 @@ pub(crate) async fn rx_handler_task(
 
                     if total_packet_count > INCOMING_PACKET_BUFFER_SIZE {
                         log!(
-                            Level::Error,
-                            "Total packet count {} exceeds buffer capacity {}. Dropping message.",
+                            Level::Warn,
+                            "[{}] Total packet count {} exceeds buffer capacity {}. Dropping message.",
+                            own_node_id,
                             total_packet_count,
                             INCOMING_PACKET_BUFFER_SIZE
                         );
@@ -279,20 +284,21 @@ pub(crate) async fn rx_handler_task(
 
                     if packet_index == total_packet_count - 1 {
                         if rx_state_queue_sender.try_send(RxState::PacketedRxEnded).is_err() {
-                            log::warn!("Failed to send PacketedRxEnded to rx_state_queue. The queue is full.");
+                            log::warn!("[{}] Failed to send PacketedRxEnded to rx_state_queue. The queue is full.", own_node_id);
                         }
                     } else if rx_state_queue_sender
                         .try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8))
                         .is_err()
                     {
-                        log::warn!("Failed to send PacketedRxInProgress to rx_state_queue. The queue is full.");
+                        log::warn!("[{}] Failed to send PacketedRxInProgress to rx_state_queue. The queue is full.", own_node_id);
                     }
 
                     if packet_index >= total_packet_count {
                         if let Some(sequence) = rx_packet.sequence() {
                             log!(
                                 Level::Warn,
-                                "Packet index out of bounds: sender: {}, sequence: {}, index: {}/{}",
+                                "[{}] Packet index out of bounds: sender: {}, sequence: {}, index: {}/{}",
+                                own_node_id,
                                 rx_packet.sender_node_id(),
                                 sequence,
                                 packet_index + 1,
@@ -301,7 +307,8 @@ pub(crate) async fn rx_handler_task(
                         } else {
                             log!(
                                 Level::Warn,
-                                "Packet index out of bounds: sender: {}, index: {}/{}",
+                                "[{}] Packet index out of bounds: sender: {}, index: {}/{}",
+                                own_node_id,
                                 rx_packet.sender_node_id(),
                                 packet_index + 1,
                                 total_packet_count
@@ -341,13 +348,18 @@ pub(crate) async fn rx_handler_task(
 
                     //if we already have this packet we can skip it
                     if already_received {
+                        log::trace!("[{}] Packet already received, skipping.", own_node_id);
                         continue;
                     }
 
                     if first_from_message {
-                        log::trace!("First packet from new message received.");
+                        log::trace!("[{}] First packet from new message received.", own_node_id);
                         if last_received_messages.contains_message(&rx_packet) {
-                            log!(Level::Trace, "Already have full message in last received messages cache, skipping.");
+                            log!(
+                                Level::Trace,
+                                "[{}] Already have full message in last received messages cache, skipping.",
+                                own_node_id
+                            );
                             //if we already have the full message (in the last received messages list), we can skip it.
                             continue;
                         } else {
@@ -363,7 +375,8 @@ pub(crate) async fn rx_handler_task(
                                 {
                                     log!(
                                         Level::Warn,
-                                        "Failed to send CheckIfAlreadyHaveMessage to incoming_message_queue. The queue is full. Dropping check for message: messagetype: {}, sequence: {}, payload_checksum: {}",
+                                        "[{}] Failed to send CheckIfAlreadyHaveMessage to incoming_message_queue. The queue is full. Dropping check for message: messagetype: {}, sequence: {}, payload_checksum: {}",
+                                        own_node_id,
                                         rx_packet.message_type(),
                                         sequence,
                                         payload_checksum,
@@ -375,6 +388,7 @@ pub(crate) async fn rx_handler_task(
 
                     //if we can't find an empty slot, we delete the message with the oldest last packet
                     if empty_index == PACKET_CHECK_BUFFER_EMPTY_VALUE {
+                        log::trace!("[{}] No empty slot found, removing oldest packet.", own_node_id);
                         let mut oldest_index: u8 = 0;
                         let mut oldest_time = Instant::now() + embassy_time::Duration::from_secs(60);
                         // Track oldest message by its first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
@@ -435,6 +449,7 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if all_packets_received {
+                        log!(Level::Trace, "[{}] All packets received for message", own_node_id);
                         // All packets received, create a RadioMessage
                         let mut radio_message = RadioMessage::new();
                         let mut assembly_failed = false;
@@ -443,14 +458,14 @@ pub(crate) async fn rx_handler_task(
                         for packet_index in packet_check_buffer.iter().take(total_packet_count) {
                             if let Some(packet_item) = &packet_buffer[*packet_index as usize] {
                                 // Add the packet to the RadioMessage
-                                if let Err(e) = radio_message.add_packet(&packet_item.packet) {
-                                    log!(Level::Error, "Failed to add packet index {} to message: {:?}", packet_index, e);
+                                if let Err(_) = radio_message.add_packet(&packet_item.packet) {
+                                    log!(Level::Error, "[{}] Failed to add packet index {} to message", own_node_id, packet_index);
                                     assembly_failed = true;
                                     break;
                                 }
                                 packet_buffer[*packet_index as usize] = None; // Clear the packet from the buffer
                             } else {
-                                log!(Level::Error, "Packet index {} not found in buffer", packet_index);
+                                log!(Level::Error, "[{}] Packet index {} not found in buffer", own_node_id, packet_index);
                                 assembly_failed = true;
                                 break;
                             }
@@ -476,6 +491,7 @@ pub(crate) async fn rx_handler_task(
                             outgoing_message_queue_sender,
                             incoming_message_queue_sender,
                             &mut relay_manager,
+                            own_node_id,
                         );
                     }
                 }
@@ -485,12 +501,32 @@ pub(crate) async fn rx_handler_task(
                 //check if process result is a block added and added it to last processing messages
                 if let MessageProcessingResult::NewBlockAdded(ref msg) = process_result {
                     last_received_messages.add_message(msg);
+                    log!(
+                        Level::Trace,
+                        "[{}] New block added to last received messages: {}",
+                        own_node_id,
+                        msg.sequence().unwrap_or(0)
+                    );
                 }
                 if let MessageProcessingResult::NewTransactionAdded(ref msg) = process_result {
                     last_received_messages.add_message(msg);
+                    log!(
+                        Level::Trace,
+                        "[{}] New transaction added to last received messages: {}",
+                        own_node_id,
+                        msg.sequence().unwrap_or(0)
+                    );
                 }
 
                 if let MessageProcessingResult::AlreadyHaveMessage(message_type, sequence, payload_checksum) = process_result {
+                    log!(
+                        Level::Trace,
+                        "[{}] Already have message: type={}, sequence={}, checksum={}. Clearing from packet_buffer",
+                        own_node_id,
+                        message_type,
+                        sequence,
+                        payload_checksum
+                    );
                     //remove all packets of the message from packet buffer
                     for packet in packet_buffer.iter_mut().take(INCOMING_PACKET_BUFFER_SIZE) {
                         if let Some(p) = packet {
@@ -515,7 +551,8 @@ pub(crate) async fn rx_handler_task(
                         let TrySendError::Full(failed_message) = result_error;
                         log!(
                             Level::Warn,
-                            "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                            "[{}] Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                            own_node_id,
                             failed_message.message_type(),
                             failed_message.sender_node_id(),
                         );
@@ -524,6 +561,7 @@ pub(crate) async fn rx_handler_task(
             }
             Either4::Fourth(_) => {
                 // Time to check for missing packets
+                log!(Level::Trace, "[{}] Checking for missing packets", own_node_id);
                 next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
 
                 let mut missing_packet_item: Option<&PacketBufferItem> = None;
@@ -554,10 +592,7 @@ pub(crate) async fn rx_handler_task(
                                     .same_message(&missing_packet.packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE])
                                 {
                                     packet_check_buffer[packet_item.packet.packet_index() as usize] = 1_u8;
-                                    //log!(Level::Debug, "[{}] Found non-matching packet at index {}", own_node_id, i);
-                                } // else {
-                                //log!(Level::Debug, "[{}] Found non-matching packet at index {}", own_node_id, i);
-                                //}
+                                }
                             }
 
                             //add missing packet indexes to the message
@@ -565,7 +600,8 @@ pub(crate) async fn rx_handler_task(
                                 if *packet_check == PACKET_CHECK_BUFFER_EMPTY_VALUE {
                                     log!(
                                         Level::Debug,
-                                        "Requesting missing packet index {} for message type {}, sequence {}, payload_checksum {}",
+                                        "[{}] Requesting missing packet index {} for message type {}, sequence {}, payload_checksum {}",
+                                        own_node_id,
                                         i,
                                         missing_packet.packet.message_type(),
                                         sequence,
@@ -574,7 +610,8 @@ pub(crate) async fn rx_handler_task(
                                     if missing_message.add_packet_index_to_request_block_part(i as u8).is_err() {
                                         log!(
                                             Level::Warn,
-                                            "Failed to add packet index {} to RequestBlockPart message. Maximum indexes reached.",
+                                            "[{}] Failed to add packet index {} to RequestBlockPart message. Maximum indexes reached.",
+                                            own_node_id,
                                             i
                                         );
                                     }
@@ -582,12 +619,19 @@ pub(crate) async fn rx_handler_task(
                             }
 
                             //send the message
+                            log!(
+                                Level::Debug,
+                                "[{}] Sending missing packet request: {}",
+                                own_node_id,
+                                missing_message.sequence().unwrap_or(0)
+                            );
                             let result = outgoing_message_queue_sender.try_send(missing_message);
                             if let Err(result_error) = result {
                                 let TrySendError::Full(failed_message) = result_error;
                                 log!(
                                     Level::Warn,
-                                    "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                                    "[{}] Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                                    own_node_id,
                                     failed_message.message_type(),
                                     failed_message.sender_node_id(),
                                 );
@@ -619,6 +663,7 @@ pub(crate) async fn rx_handler_task(
 /// * `outgoing_message_queue_sender` - Queue sender for messages to relay/forward
 /// * `incoming_message_queue_sender` - Queue sender for messages to deliver to application
 /// * `relay_manager` - RelayManager instance for network topology and forwarding decisions
+/// * `own_node_id` - This node's unique network identifier for logging
 ///
 /// # Message Type Handling
 ///
@@ -638,7 +683,15 @@ fn process_message(
     outgoing_message_queue_sender: OutgoingMessageQueueSender,
     incoming_message_queue_sender: IncomingMessageQueueSender,
     relay_manager: &mut RelayManager<CONNECTION_MATRIX_SIZE, WAIT_POOL_SIZE>,
+    own_node_id: u32,
 ) {
+    log::trace!(
+        "[{}] Processing incomming message: type: {}, sender: {}, length: {}",
+        own_node_id,
+        message.message_type(),
+        message.sender_node_id(),
+        message.length()
+    );
     //crc check
     if (message.message_type() == MessageType::AddBlock as u8 || message.message_type() == MessageType::AddTransaction as u8)
         && !message.check_payload_checksum()
@@ -646,7 +699,8 @@ fn process_message(
         if let Some(sequence) = message.sequence() {
             log!(
                 Level::Warn,
-                "CRC check failed for message: type: {}, sequence: {}, sender: {}. Dropping message.",
+                "[{}] CRC check failed for message: type: {}, sequence: {}, sender: {}. Dropping message.",
+                own_node_id,
                 message.message_type(),
                 sequence,
                 message.sender_node_id()
@@ -654,7 +708,8 @@ fn process_message(
         } else {
             log!(
                 Level::Warn,
-                "CRC check failed for message without sequence: type: {}, sender: {}. Dropping message.",
+                "[{}] CRC check failed for message without sequence: type: {}, sender: {}. Dropping message.",
+                own_node_id,
                 message.message_type(),
                 message.sender_node_id()
             );
@@ -675,7 +730,8 @@ fn process_message(
                 let TrySendError::Full(failed_message) = result_error;
                 log!(
                     Level::Warn,
-                    "Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                    "[{}] Failed to send message to outgoing_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                    own_node_id,
                     failed_message.message_type(),
                     failed_message.sender_node_id(),
                 );
@@ -703,7 +759,8 @@ fn process_message(
             };
             log!(
                 Level::Warn,
-                "Failed to send message to incoming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                "[{}] Failed to send message to incoming_message_queue. The queue is full. Dropping message: messagetype: {}, sender_node_id: {}",
+                own_node_id,
                 failed_message.message_type(),
                 failed_message.sender_node_id(),
             );
@@ -742,7 +799,7 @@ mod tests {
 
         let mut rm = new_rm();
         let msg = RadioMessage::request_echo_with(2);
-        process_message(msg, 10, out_tx, in_tx, &mut rm);
+        process_message(msg, 10, out_tx, in_tx, &mut rm, 1);
 
         // With echo pooling, there is no immediate outgoing echo
         assert!(out_rx.try_receive().is_err(), "no immediate echo expected");
@@ -765,7 +822,7 @@ mod tests {
 
         let mut rm = new_rm();
         let msg = RadioMessage::add_block_with(3, 100, &[1, 2, 3]);
-        process_message(msg, 5, out_tx, in_tx, &mut rm);
+        process_message(msg, 5, out_tx, in_tx, &mut rm, 1);
 
         // Incoming should have the AddBlock
         let item = in_rx.try_receive().expect("expected an incoming message");
@@ -800,7 +857,7 @@ mod tests {
 
         // Process an equal message: should be treated as duplicate
         let dup = RadioMessage::add_block_with(4, 5, &[9]); // different sender ignored in equality
-        process_message(dup, 0, out_tx, in_tx, &mut rm);
+        process_message(dup, 0, out_tx, in_tx, &mut rm, 1);
 
         assert!(in_rx.try_receive().is_err());
         assert!(out_rx.try_receive().is_err());
