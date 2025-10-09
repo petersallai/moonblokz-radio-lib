@@ -13,14 +13,13 @@
 //!
 //! ## Transmission Strategy
 //!
-//! 1. **Initial Random Delay**: Each message starts with a random delay (0-2000ms) to
+//! 1. **Initial Random Delay**: Each message starts with a random delay to
 //!    reduce the probability of collisions when multiple nodes want to transmit
 //!
 //! 2. **Inter-Packet Delay**: Configurable delay between packets of the same message
-//!    to allow other nodes to access the channel
 //!
 //! 3. **Inter-Message Delay**: Configurable delay between different messages to ensure
-//!    fair channel access
+//!    fair channel access and handle duty cycle limitations
 //!
 //! 4. **RX State Awareness**: Pauses transmission during multi-packet reception to
 //!    avoid interrupting incoming messages
@@ -32,7 +31,7 @@
 //! - Random jitter is added to prevent systematic collisions
 
 use core::cmp::max;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{select, Either};
 use embassy_time::{Duration, Instant, Timer};
 use log::log;
 use rand_core::RngCore;
@@ -48,7 +47,7 @@ use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 /// 1. Messages are transmitted in the order they are received
 /// 2. A configurable minimum delay is maintained between transmissions
 /// 3. Failed transmissions don't affect the timing of subsequent transmissions
-/// 4. Individual packets within a message respect packet-level delays
+/// 4. Individual packets within a message respect packet-level delays (handled by the radio device)
 ///
 /// The scheduler waits for incoming messages from the outgoing message queue and
 /// forwards them to the radio device while respecting timing constraints.
@@ -58,6 +57,10 @@ use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 /// * `radio_device_sender` - Sender for forwarding packets to the radio device
 /// * `delay_between_packets` - Minimum delay in seconds between individual packets
 /// * `delay_between_messages` - Minimum delay in seconds between message transmissions
+/// * `tx_maximum_random_delay` - Maximum jitter in milliseconds added to transmission timing
+/// * `own_node_id` - This node's unique identifier for logging
+/// * `rng_seed` - Seed for the random number generator to ensure varied timing
+///
 #[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
 pub(crate) async fn tx_scheduler_task(
     outgoing_message_queue_receiver: OutgoingMessageQueueReceiver,

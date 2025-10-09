@@ -10,7 +10,7 @@
 //! - **Output Queue**: Sends packets from this node to the network simulator
 //! - **Input Queue**: Receives packets from the network simulator to this node
 //! - **TX/RX Integration**: Connects to the standard packet queues used by the library
-//! - **CAD Simulation**: Emulates channel activity detection with random delays
+//! - **CAD Simulation**: Emulates channel activity detection by the network simulator
 //!
 //! ## Key Components
 //!
@@ -34,28 +34,25 @@
 //!
 //! ## Timing Simulation
 //!
-//! The simulator adds realistic timing characteristics:
-//! - CAD minimum wait: 300ms baseline delay
-//! - CAD random jitter: 0-200ms additional delay
-//! - Emulates real hardware timing constraints
+//! - CAD minimum wait: 300ms baseline delay after busy channel detection
+//! - CAD random jitter: 0-200ms additional delay after busy detection
 //!
 //! ## Design Considerations
 //!
 //! - Pool size supports MAX_NODE_COUNT concurrent simulated nodes
-//! - Queue sizes configurable (default: 10 messages per queue)
 //! - Random number generator for timing jitter
 //! - Embassy async task model matches hardware implementation
 //! - Compatible with the same API as physical radio devices
 
-use crate::MAX_NODE_COUNT;
 use crate::RadioPacket;
 use crate::ReceivedPacket;
 use crate::RxPacketQueueSender;
 use crate::TxPacketQueueReceiver;
-use embassy_futures::select::{Either, select};
+use crate::MAX_NODE_COUNT;
+use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
-use log::{Level, log};
+use log::{log, Level};
 use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
@@ -68,8 +65,7 @@ const CAD_MINIMAL_WAIT_TIME: u64 = 300;
 
 /// Maximum additional random wait time in milliseconds after CAD
 ///
-/// Added to CAD_MINIMAL_WAIT_TIME to create randomized backoff, mimicking
-/// real-world behavior and helping to avoid synchronized collisions when
+/// Added to CAD_MINIMAL_WAIT_TIME to create randomized backoff, helping to avoid synchronized collisions when
 /// multiple simulated nodes detect the same busy channel.
 const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200;
 

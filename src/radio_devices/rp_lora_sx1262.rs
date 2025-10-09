@@ -1,32 +1,24 @@
-//! # LoRa SX1262 Radio Device - Hardware Abstraction for SX1262 Transceiver
+//! # LoRa SX1262 Radio Device - Hardware Abstraction for SX1262 Transceiver with RP2040 based on lora-phy crate
 //!
 //! This module provides a complete hardware abstraction layer for the Semtech SX1262
-//! LoRa transceiver chip. It implements async radio operations with Embassy framework
-//! integration and provides a type-safe interface for radio communication.
+//! LoRa transceiver chip used with Raspberry Pi Pico (RP2040). It implements async radio
+//! operations with Embassy framework integration and provides a type-safe interface for radio communication.
 //!
 //! ## Architecture
 //!
-//! The radio device implementation uses a state machine approach:
+//! The radio device implementation uses a state machine approach for initialization:
 //! - **Uninitialized**: Initial state before hardware setup
-//! - **Idle**: Radio is ready but not actively transmitting or receiving
+//! - **Initialized**: Hardware resources allocated and ready for operation
+//!
+//! After initialization, the device runs an async task that manages TX/RX operations:
 //! - **Transmitting**: Currently sending a packet
 //! - **Receiving**: Currently listening for packets
 //! - **CAD (Channel Activity Detection)**: Scanning for channel activity before TX
 //!
 //! ## Key Components
 //!
-//! - **RadioDevice<S>**: Main state machine generic over state type
-//!   - State transitions enforce valid operation sequences
-//!   - Compile-time guarantees prevent invalid operations (e.g., TX while RX)
-//!
-//! - **SPI Communication**: Low-level interface to SX1262 chip
-//!   - Command abstraction with register access
-//!   - Busy pin monitoring for chip state
-//!   - DMA support for efficient data transfer
-//!
 //! - **Packet Parameters**: Separate TX and RX configuration
 //!   - Configurable preamble length, header type, CRC
-//!   - Power amplifier configuration (PA_CONFIG)
 //!   - Modulation parameters (spreading factor, bandwidth, coding rate)
 //!
 //! - **Queue Integration**: Async channel-based communication
@@ -38,13 +30,11 @@
 //!
 //! Before transmitting, CAD scans the channel for existing activity:
 //! - Reduces packet collisions in dense networks
-//! - Configurable detection parameters
 //! - Falls back to immediate transmission if channel is clear
+//! - Implements randomized backoff if channel is busy
 //!
 //! ## Design Considerations
 //!
-//! - Generic state machine provides compile-time safety
-//! - SPI operations use DMA for performance on embedded systems
 //! - Packet size is fixed at compile time (RADIO_PACKET_SIZE)
 //! - Link quality calculation uses RSSI values from radio
 //! - Embassy async integration enables non-blocking operation
@@ -52,7 +42,7 @@
 //!
 //! ## Hardware Requirements
 //!
-//! - SX1262 LoRa transceiver chip
+//! - SX1262 LoRa transceiver chip connected to RP2040 via SPI
 //! - SPI interface (MOSI, MISO, CLK, NSS pins)
 //! - Control pins: RESET, DIO1, BUSY
 //! - Optional: ANT_SW (antenna switch control)
@@ -71,7 +61,6 @@ use crate::TxPacketQueueReceiver;
 ///
 /// # Features
 /// - Async operation with Embassy framework
-/// - State-based design preventing invalid operations
 /// - Channel Activity Detection (CAD) support
 /// - Configurable modulation parameters
 /// - Separate TX/RX packet parameter management
@@ -135,13 +124,14 @@ const CAD_MAX_ADDITIONAL_WAIT_TIME: u64 = 200;
 /// CAD operation timeout in milliseconds
 ///
 /// Maximum time to wait for a CAD operation to complete before considering it failed.
+/// This is a workaround, because on the test hardware CAD sometimes never completes.
+/// Other operations (RX, TX) always complete or error out.
 const CAD_TIMEOUT_MS: u64 = 1000;
 
 /// Radio device initialization errors
 ///
 /// Represents specific errors that can occur during radio device initialization.
 /// These provide more granular error information than the generic `InitializationFailed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RadioDeviceInitError {
     /// Failed to create the SX126x interface variant
     InterfaceError,
@@ -155,6 +145,7 @@ pub enum RadioDeviceInitError {
     RXPacketParamsError,
 }
 
+/// Radio device operation errors
 enum RadioDeviceError {
     /// Device was not initialized before attempting an operation
     InitializationFailed,
@@ -174,6 +165,8 @@ enum RadioDeviceError {
 /// initial value 0xFFFF. Used when the `soft-packet-crc` feature is enabled
 /// to provide packet integrity verification in software.
 ///
+/// This function is a workaround, because on test hardware the hardware CRC function does not work.
+///
 /// # Parameters
 /// * `data` - Byte slice to calculate CRC for
 ///
@@ -191,6 +184,7 @@ enum RadioDeviceError {
 /// let crc = checksum16(data);
 /// assert_eq!(crc, 0x29B1);
 /// ```
+#[cfg(feature = "soft-packet-crc")]
 fn checksum16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {
@@ -262,7 +256,7 @@ enum RadioDeviceState {
 ///
 /// # CAD Backoff
 /// When CAD detects a busy channel, waits CAD_MINIMAL_WAIT_TIME plus a
-/// random duration up to CAD_MAX_ADDITIONAL_WAIT_TIME before retrying.
+/// random jitter up to CAD_MAX_ADDITIONAL_WAIT_TIME before retrying.
 #[cfg_attr(feature = "std", embassy_executor::task(pool_size = 100))]
 #[cfg_attr(feature = "embedded", embassy_executor::task(pool_size = 1))]
 pub async fn radio_device_task(

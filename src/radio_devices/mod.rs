@@ -21,13 +21,13 @@ pub mod simulator;
 
 // Re-export the active radio device implementation
 #[cfg(feature = "radio-device-rp-lora-sx1262")]
-pub use rp_lora_sx1262::{RadioDevice, radio_device_task};
+pub use rp_lora_sx1262::{radio_device_task, RadioDevice};
 
 #[cfg(feature = "radio-device-echo")]
-pub use echo::{RadioDevice, radio_device_task};
+pub use echo::{radio_device_task, RadioDevice};
 
 #[cfg(feature = "radio-device-simulator")]
-pub use simulator::{RadioDevice, radio_device_task};
+pub use simulator::{radio_device_task, RadioDevice};
 
 // Re-export link quality utilities
 pub use link_quality_calculations::{calculate_link_quality, normalize};

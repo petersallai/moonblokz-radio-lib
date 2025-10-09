@@ -1,6 +1,8 @@
 //! # MoonBlokz Radio Library
 //!
 //! A no_std compatible radio communication library for building decentralized mesh networks.
+//! The library is designed for use as a radio layer of the MoonBlokz blockchain network.
+//! More information about the MoonBlokz project can be found at https://moonblokz.com
 //! This library provides the core infrastructure for packet-based radio communication with
 //! support for multi-packet messages, relay management, and various radio hardware backends.
 //!
@@ -9,7 +11,7 @@
 //! The library is organized around several key components that work together to provide
 //! reliable radio communication:
 //!
-//! - **Radio Device Layer**: Abstraction over different radio hardware (LoRa SX1262, simulator, echo)
+//! - **Radio Device Layer**: Abstraction over different radio hardware (RP2040 with LoRa SX1262, simulator, echo)
 //! - **Message/Packet Layer**: Data structures for messages and packets with fragmentation support
 //! - **TX Scheduler**: Manages transmission timing and queuing
 //! - **RX Handler**: Processes received packets and reconstructs multi-packet messages
@@ -18,7 +20,7 @@
 //!
 //! ## Features
 //!
-//! - `radio-device-rp-lora-sx1262`: LoRa SX1262 hardware support
+//! - `radio-device-rp-lora-sx1262`: RP2040 with LoRa SX1262 hardware support
 //! - `radio-device-simulator`: Network simulator for testing
 //! - `radio-device-echo`: Simple echo device for testing
 //! - `std`: Standard library support (disabled for embedded targets)
@@ -42,8 +44,7 @@
 //!
 //! ## Reliability
 //!
-//! The library not handles retransmission of lost packets - this is managed by the higher-level blockchain protocol.
-//! Also the protocol not depends on acknowledgments or handshakes to confirm receipt of messages. The network layer mostly
+//! The protocol not depends on acknowledgments or handshakes to confirm receipt of messages. The network layer mostly
 //! delivers messages to all nodes and the higher-level protocols handles the rare exceptions. Using this approach
 //! minimizes radio traffic and maximizes network efficiency, which is critical on the LoRa networks.
 
@@ -80,7 +81,7 @@ compile_error!("At least one memory configuration feature must be enabled");
 pub mod radio_devices;
 
 // Import the active radio device implementation
-use crate::radio_devices::{RadioDevice, radio_device_task};
+use crate::radio_devices::{radio_device_task, RadioDevice};
 
 use crate::tx_scheduler::tx_scheduler_task;
 use embassy_executor::Spawner;
@@ -104,15 +105,10 @@ pub use messages::{EchoResultItem, EchoResultIterator, MessageType, RadioMessage
 pub use radio_devices::{calculate_link_quality, normalize};
 
 /// Size of the header for multi-packet messages (13 bytes)
-///
-/// This header contains metadata for reconstructing the full message from packets,
-/// including sequence numbers, total packet count, and payload information.
 const RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE: usize = 13;
 
 /// Size of the header for individual packets within multi-packet messages (15 bytes)
-///
-/// Each packet carries routing and fragmentation metadata including sender ID,
-/// message type, packet index, and CRC information.
+/// Includes the message header size plus 2 bytes for packet index and total packet count
 const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15;
 
 // Hardware dependent constants that affect compatibility between nodes
@@ -127,7 +123,6 @@ pub const RADIO_PACKET_SIZE: usize = 215;
 /// Maximum size of a complete message payload in bytes
 ///
 /// Messages larger than a single packet are automatically fragmented.
-/// Must be calculated as: multiple of (RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE) + RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
 /// **Compatibility critical**: All nodes in the network must use the same value.
 pub const RADIO_MAX_MESSAGE_SIZE: usize = 2013;
 
@@ -168,9 +163,7 @@ const INCOMING_PACKET_BUFFER_SIZE: usize = 30;
 #[cfg(feature = "memory-config-large")]
 const INCOMING_PACKET_BUFFER_SIZE: usize = 50;
 
-/// Number of messages that can wait for relay decisions simultaneously
-///
-/// Messages awaiting relay scoring and transmission scheduling are queued here.
+/// Number of messages that can wait for relaying simultaneously
 
 #[cfg(feature = "memory-config-small")]
 const WAIT_POOL_SIZE: usize = 5;
@@ -181,9 +174,7 @@ const WAIT_POOL_SIZE: usize = 10;
 #[cfg(feature = "memory-config-large")]
 const WAIT_POOL_SIZE: usize = 20;
 
-/// Number of concurrent echo response collections that can be tracked
-///
-/// Echo protocol responses are buffered here during the gathering phase.
+/// Number of concurrent echo responses that can be handled simultaneously
 
 #[cfg(feature = "memory-config-small")]
 const ECHO_RESPONSES_WAIT_POOL_SIZE: usize = 3;
@@ -208,16 +199,13 @@ const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 20;
 #[cfg(feature = "memory-config-large")]
 const LAST_RECEIVED_MESSAGE_BUFFER_SIZE: usize = 30;
 
-/// Maximum number of concurrent nodes supported in the network
+/// Maximum number of concurrent nodes supported in a process
 ///
 /// In simulator mode, supports up to 1000 nodes for testing large networks.
 /// For real hardware, typically set to 1 (single node deployment).
 #[cfg(feature = "radio-device-simulator")]
 pub const MAX_NODE_COUNT: usize = 1000;
 
-/// Maximum number of concurrent nodes supported in the network
-///
-/// For embedded/hardware deployments, limited to 1 node per device.
 #[cfg(not(feature = "radio-device-simulator"))]
 pub const MAX_NODE_COUNT: usize = 1;
 
@@ -231,27 +219,27 @@ pub const MAX_NODE_COUNT: usize = 1;
 /// use moonblokz_radio_lib::{RadioConfiguration, ScoringMatrix};
 ///
 /// let config = RadioConfiguration {
-///     delay_between_tx_packets: 1,      // 1 second between packets
+///     delay_between_tx_packets: 200,      // 200 milliseconds between packets
 ///     delay_between_tx_messages: 20,    // 20 seconds between messages
-///     echo_request_minimal_interval: 86400, // Echo every 24 hours
-///     echo_messages_target_interval: 100,   // Target 100 messages between echoes
+///     echo_request_minimal_interval: 86400, // Echo max frequency is every 24 hours
+///     echo_messages_target_interval: 100,   // Target 100 seconds between echo messages by ourselves or neighbors
 ///     echo_gathering_timeout: 10,           // Wait 10 minutes for echo responses
-///     relay_position_delay: 10,             // 10 second delay for relay scoring
-///     scoring_matrix: ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]),
+///     relay_position_delay: 10,             // 10 second delay for relaying by calculated position
+///     scoring_matrix: ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]), // Example scoring matrix in compressed form
 ///     retry_interval_for_missing_packets: 60, // Retry missing packets after 60 seconds
 ///    tx_maximum_random_delay: 200,        // Up to 200ms random delay
 /// };
 /// ```
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioConfiguration {
-    /// Delay in seconds between individual packets within a multi-packet message
+    /// Delay in milliseconds between individual packets within a multi-packet message
     ///
-    /// Prevents overwhelming the receiver and allows other nodes to transmit.
+    /// Prevents overwhelming the receiver.
     pub delay_between_tx_packets: u16,
 
     /// Delay in seconds between complete message transmissions
     ///
-    /// Provides fair channel access and prevents a single node from monopolizing the spectrum.
+    /// Provides fair channel access and prevents a single node from monopolizing the spectrum and handles duty cycle limits.
     pub delay_between_tx_messages: u8,
 
     /// Minimum interval in seconds between echo request broadcasts
@@ -260,18 +248,18 @@ pub struct RadioConfiguration {
     /// Lower values provide more frequent topology updates but increase network traffic.
     pub echo_request_minimal_interval: u32,
 
-    /// Target number of messages to receive before sending an echo request
+    /// Target number of seconds between echo messages by ourselves or neighbors
     ///
-    /// Adaptive echo timing: if the network is active, echo less frequently.
+    /// Adaptive echo timing: if we have many neighbors, we echo less frequently.
     pub echo_messages_target_interval: u8,
 
     /// Timeout in minutes to wait for echo responses during the gathering phase
     ///
     /// After broadcasting an echo request, the node waits this long to collect responses
-    /// from neighbors before processing the topology update.
+    /// from neighbors before broadcasting the topology update.
     pub echo_gathering_timeout: u8,
 
-    /// Delay in seconds used when calculating relay position in the scoring algorithm
+    /// Delay in seconds before relaying a message based on calculated relay position
     ///
     /// Nodes with better connections wait less time before relaying, implementing
     /// a distributed priority system.
@@ -286,7 +274,7 @@ pub struct RadioConfiguration {
     /// Interval in seconds to retry requesting missing packets in a multi-packet message
     ///
     /// When packets are lost during transmission, this controls how often to request
-    /// retransmission from the sender.
+    /// retransmission from the network.
     pub retry_interval_for_missing_packets: u8,
 
     /// Maximum random delay in milliseconds added to transmission timing
@@ -420,7 +408,7 @@ const INCOMING_MESSAGE_QUEUE_SIZE: usize = 2;
 #[cfg(feature = "memory-config-medium")]
 const INCOMING_MESSAGE_QUEUE_SIZE: usize = 3;
 #[cfg(feature = "memory-config-large")]
-const INCOMING_MESSAGE_QUEUE_SIZE: usize = 8;
+const INCOMING_MESSAGE_QUEUE_SIZE: usize = 10;
 
 /// Type alias for the incoming message channel
 type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
@@ -475,7 +463,7 @@ const RX_PACKET_QUEUE_SIZE: usize = 2;
 const RX_PACKET_QUEUE_SIZE: usize = 3;
 
 #[cfg(feature = "memory-config-large")]
-const RX_PACKET_QUEUE_SIZE: usize = 8;
+const RX_PACKET_QUEUE_SIZE: usize = 5;
 
 /// Type alias for the RX packet channel
 type RxPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
