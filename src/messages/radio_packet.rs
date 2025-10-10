@@ -14,11 +14,11 @@
 //! - Byte 0: Message type
 //! - Bytes 1-4: Sender node ID
 //!
-//! For multi-packet messages (AddBlock, AddTransaction, Support), additional fields follow:
+//! For multi-packet messages (AddBlock, AddTransaction), additional fields follow:
 //! - Bytes 5-8: Sequence number
 //! - Bytes 9-12: Payload checksum
 //! - Byte 13: Total packet count (in multi-packet header section)
-//! - Byte 14: Packet index (in multi-packet header section)
+//! - Byte 14: Packet index (in multi-packet header section, 0..N-1)
 //!
 //! ## Design Considerations
 //!
@@ -80,26 +80,6 @@ impl RadioPacket {
         u32::from_le_bytes(node_id_bytes)
     }
 
-    /// Returns the total number of packets in this message
-    ///
-    /// For multi-packet messages (AddBlock, AddTransaction), extracts the total
-    /// packet count from the multi-packet header. For single-packet messages,
-    /// always returns 1.
-    ///
-    /// # Returns
-    /// Total packet count (1 for single-packet messages, >1 for multi-packet)
-    pub fn total_packet_count(&self) -> u8 {
-        let message_type = self.message_type();
-        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
-            if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
-                return 0; // Not enough data for packet count
-            }
-            self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
-        } else {
-            1 // For other message types, always 1 packet
-        }
-    }
-
     /// Extracts the sequence number from applicable message types
     ///
     /// Sequence numbers are present in AddBlock, RequestFullBlock, Support,
@@ -152,6 +132,26 @@ impl RadioPacket {
         let mut checksum_bytes = [0u8; 4];
         checksum_bytes.copy_from_slice(&self.data[9..13]);
         Some(u32::from_le_bytes(checksum_bytes))
+    }
+
+    /// Returns the total number of packets in this message
+    ///
+    /// For multi-packet messages (AddBlock, AddTransaction), extracts the total
+    /// packet count from the multi-packet header. For single-packet messages,
+    /// always returns 1.
+    ///
+    /// # Returns
+    /// Total packet count (1 for single-packet messages, >1 for multi-packet)
+    pub fn total_packet_count(&self) -> u8 {
+        let message_type = self.message_type();
+        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
+            if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
+                return 0; // Not enough data for packet count
+            }
+            self.data[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
+        } else {
+            1 // For other message types, always 1 packet
+        }
     }
 
     /// Returns this packet's index within a multi-packet message
