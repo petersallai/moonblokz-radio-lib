@@ -95,7 +95,7 @@ impl RadioPacket {
             && self.message_type() != MessageType::Support as u8
             && self.message_type() != MessageType::RequestBlockPart as u8
         {
-            return None; // Only AddBlock and AddTransaction messages have a sequence
+            return None;
         }
 
         // Extract the sequence number from the message payload
@@ -119,10 +119,10 @@ impl RadioPacket {
     pub(crate) fn payload_checksum(&self) -> Option<u32> {
         if self.message_type() != MessageType::AddBlock as u8
             && self.message_type() != MessageType::RequestFullBlock as u8
-            && self.message_type() != MessageType::Support as u8
+            && self.message_type() != MessageType::AddTransaction as u8
             && self.message_type() != MessageType::RequestBlockPart as u8
         {
-            return None; // Only AddBlock and AddTransaction messages have a sequence
+            return None;
         }
 
         // Extract the payload checksum from the message payload
