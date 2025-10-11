@@ -50,13 +50,12 @@
 //!
 //! - Pool size supports MAX_NODE_COUNT (though typically used with 1 node)
 //! - Backpressure handling drops packets if RX queue is full
-//! - Zero-cost abstraction with no runtime overhead
 //! - Compatible with the same API as other radio device implementations
 
-use crate::MAX_NODE_COUNT;
 use crate::RxPacketQueueSender;
 use crate::TxPacketQueueReceiver;
-use log::{Level, log};
+use crate::MAX_NODE_COUNT;
+use log::{log, Level};
 
 /// Echo radio device task - loops packets back for testing
 ///
