@@ -8,9 +8,7 @@
 //!
 //! When a node receives a message that should be relayed, it's added to the wait pool
 //! with a calculated activation time. The activation time depends on:
-//! - The node's position in the network relative to other potential relays
-//! - The quality of connections to other nodes
-//! - A scoring matrix that prioritizes well-connected nodes
+//! - The node's coverage in the known part of the network relative to other potential relays
 //!
 //! # Relay Position Algorithm
 //!
@@ -18,6 +16,7 @@
 //! 2. Compare score against other nodes that have likely received the message
 //! 3. Assign a position (0 = best relay candidate, higher = less optimal)
 //! 4. Schedule activation time = position × delay + random jitter
+//! 5. If own score is below threshold, do not add to pool
 //!
 //! This approach naturally prioritizes well-connected nodes to relay first, while
 //! allowing less-connected nodes to relay if better candidates don't respond.
@@ -27,6 +26,7 @@
 //! If additional packets for the same message arrive, the wait pool updates its
 //! network knowledge and recalculates the relay position, potentially changing
 //! the activation time.
+//! If own score drops below threshold, the message is removed from the pool.
 //!
 //! # Capacity Management
 //!
@@ -52,8 +52,8 @@ use crate::relay_manager::QUALITY_MASK;
 /// # Arguments
 ///
 /// * `value` - The connection matrix cell value (quality + flags)
-/// * `poor_limit` - Threshold between Poor and Fair (typically 16)
-/// * `excellent_limit` - Threshold between Fair and Excellent (typically 48)
+/// * `poor_limit` - Threshold between Poor and Fair (for example 16)
+/// * `excellent_limit` - Threshold between Fair and Excellent (for example 48)
 ///
 /// # Returns
 ///
@@ -78,7 +78,7 @@ fn calc_category(value: u8, poor_limit: u8, excellent_limit: u8) -> u8 {
 ///
 /// Stores a message that should be relayed along with:
 /// - When it should be transmitted (activation time)
-/// - Network topology as known at the time (connection quality to all nodes)
+/// - Aggregated connection qualities from the known relay events from the same message until now
 /// - Optional requestor node (for targeted relay decisions)
 ///
 /// The activation time is recalculated when new network information arrives,
@@ -90,8 +90,7 @@ pub(crate) struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
     /// When this message should be transmitted
     activation_time: Instant,
 
-    /// Network topology snapshot: connection quality to each node as understood
-    /// when the message was received
+    /// Aggregated connection qualities from the known relay events from the same message until now
     message_connections: ConnectionMatrixRow,
 
     /// Index of the node that requested this message (if any)
@@ -117,10 +116,10 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
     /// # Scoring Logic
     ///
     /// If there's a specific requestor, only that connection is scored.
-    /// Otherwise, all connections are scored and summed.
+    /// Otherwise, all known connections are scored and summed.
     ///
     /// For each connection:
-    /// 1. Categorize the message sender's connection quality to that node
+    /// 1. Categorize the aggregated previous relayers quality to that node
     /// 2. Categorize this node's connection quality to that node
     /// 3. Look up the score in the scoring matrix [sender_category][own_category]
     ///
@@ -166,6 +165,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
     /// 2. Calculate that node's relay score for this message
     /// 3. If their score is higher than ours, increment our position
     ///
+    /// Nodes that already relayed the message get zero score, because their connections are
+    /// already added to the message_connections
+    ///
     /// # Arguments
     ///
     /// * `item_connections` - Message sender's connection quality to all nodes
@@ -207,7 +209,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
 /// # Type Parameters
 ///
 /// * `WAIT_POOL_SIZE` - Maximum number of messages that can be queued
-/// * `CONNECTION_MATRIX_SIZE` - Size of the network (max nodes)
+/// * `CONNECTION_MATRIX_SIZE` - Size of the tracked nodes
 ///
 /// # Relay Scheduling
 ///
@@ -246,6 +248,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// * `relay_position_delay` - Seconds of delay per position in relay queue
     /// * `scoring_matrix` - Configuration for relay scoring algorithm
     /// * `rng_seed` - Seed for random number generation (for jitter)
+    /// * `own_node_id` - This node's unique identifier for logging
     ///
     /// # Returns
     ///
@@ -279,7 +282,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             .any(|item| item.as_ref().is_some_and(|i| &i.message == message || i.message.is_reply_to(message)))
     }
 
-    /// Updates an existing message's network topology and recalculates activation time
+    /// Updates an existing message's network scores and recalculates activation time
     ///
     /// When additional packets arrive for a message already in the pool, this method
     /// updates the network knowledge and recalculates the relay position and timing.
@@ -288,12 +291,12 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     ///
     /// For each node, takes the maximum connection quality seen so far (from either
     /// the original packet or this new packet). This builds a progressively more
-    /// complete picture of network topology.
+    /// complete picture of where the message is already received.
     ///
     /// # Score-Based Removal
     ///
     /// If the updated score falls below the relay threshold, the message is removed
-    /// from the pool (another nodes with better position already relayaed the message).
+    /// from the pool (another nodes with better position already relayed the message).
     ///
     /// # Arguments
     ///
@@ -331,6 +334,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     }
                     let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
 
+                    // Recalculate activation time with new position and jitter as half the range
                     item.activation_time = Instant::now()
                         + Duration::from_secs(position * self.relay_position_delay)
                         + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
@@ -357,6 +361,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// 1. Updating existing messages (if already in pool)
     /// 2. Creating new entries with calculated activation times
     /// 3. Capacity management (replacing low-score messages when full)
+    /// 4. If own score is below a given limit, the message is discarded
     ///
     /// # Relay Score Filtering
     ///
@@ -465,7 +470,10 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         }
     }
 
-    /// Updates network topology for messages based on a received packet
+    /// Updates items that requested by a node based on a received packet
+    /// This is neccesary, because if a node requests missing packets from a message,
+    /// the full message won't be transmitted, only the missing packets. This
+    /// function handles this case, by updating the waitpool items with received packets (not messages).
     ///
     /// When a packet arrives, it may match messages already in the wait pool
     /// (e.g., another packet from the same multi-packet message). This method
@@ -527,7 +535,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
                                 log!(
                                     log::Level::Trace,
-                                    "[{}] adding item to waitpool: sequence: {}, position: {}, activation_time: {} s",
+                                    "[{}] updated item in waitpool: sequence: {}, position: {}, activation_time: {} s",
                                     self.own_node_id,
                                     item.message.sequence().unwrap_or(0),
                                     position,
@@ -593,9 +601,9 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
     /// Updates the pool when a connection matrix entry changes
     ///
-    /// When a node's connection status changes (e.g., connection lost, quality changed),
+    /// When a node replaced in the connection matrix by other node,
     /// this method updates all affected wait pool items by clearing the connection
-    /// quality for that node.
+    /// quality for that node index.
     ///
     /// # Special Handling for Requestor-Targeted Messages
     ///
