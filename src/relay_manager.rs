@@ -108,8 +108,9 @@ const _: () = assert!(MAX_DIRTY_COUNT <= (DIRTY_MASK >> DIRTY_SHIFT), "MAX_DIRTY
 
 /// Maximum dirty count before connection is reset to zero
 ///
-/// When a connection reaches this dirty count without updates, it's
-/// considered stale and removed from the matrix (zeroed out).
+/// Value of 3 allows for 3 missed echo cycles before connection removal,
+/// providing tolerance for temporary network issues while preventing stale
+/// connection accumulation.
 const MAX_DIRTY_COUNT: u8 = 3;
 
 /// Result of evaluating whether to relay a message

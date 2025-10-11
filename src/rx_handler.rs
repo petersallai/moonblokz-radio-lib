@@ -42,20 +42,20 @@
 
 use crate::relay_manager::RelayResult;
 use crate::{
-    CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, IncomingMessageItem, LAST_RECEIVED_MESSAGE_BUFFER_SIZE, MAX_NODE_COUNT, MessageProcessingResult,
-    MessageType, RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, RxState, ScoringMatrix, WAIT_POOL_SIZE,
+    IncomingMessageItem, MessageProcessingResult, MessageType, RxState, ScoringMatrix, CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE,
+    LAST_RECEIVED_MESSAGE_BUFFER_SIZE, MAX_NODE_COUNT, RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, WAIT_POOL_SIZE,
 };
-use embassy_futures::select::{Either4, select4};
+use embassy_futures::select::{select4, Either4};
 use embassy_sync::channel::TrySendError;
 use embassy_time::{Instant, Timer};
-use log::{Level, log};
+use log::{log, Level};
 use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 use crate::{
-    IncomingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver, RxStateQueueSender,
-    relay_manager::RelayManager,
+    relay_manager::RelayManager, IncomingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket,
+    RxPacketQueueReceiver, RxStateQueueSender,
 };
 
 /// Buffered packet with arrival timestamp for assembly tracking
@@ -692,7 +692,7 @@ fn process_message(
         message.sender_node_id(),
         message.length()
     );
-    //crc check
+    //crc check, dropping message if it fails
     if (message.message_type() == MessageType::AddBlock as u8 || message.message_type() == MessageType::AddTransaction as u8)
         && !message.check_payload_checksum()
     {
@@ -771,8 +771,8 @@ fn process_message(
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::MessageProcessingResult;
     use crate::relay_manager::RelayManager;
+    use crate::MessageProcessingResult;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
     use embassy_sync::channel::Channel;
 
