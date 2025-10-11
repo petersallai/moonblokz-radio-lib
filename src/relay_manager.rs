@@ -4,11 +4,13 @@
 //! knowledge and makes intelligent forwarding decisions for messages in the mesh network.
 //! It tracks connection quality between nodes and determines optimal relay paths.
 //!
+//! All nodes only maintain a local view of the network, without global knowledge.
+//!
 //! ## Architecture
 //!
 //! The RelayManager maintains:
 //! - **Connection Matrix**: NxN grid tracking link quality between all known node pairs
-//! - **Wait Pool**: Pending messages awaiting responses (request-response pattern)
+//! - **Wait Pool**: Pending messages awaiting to be relayed based on timing and scoring
 //! - **Echo System**: Active probing mechanism to discover and measure connections
 //! - **Scoring Algorithm**: Multi-factor evaluation for relay decisions
 //!
@@ -16,32 +18,24 @@
 //!
 //! - **Connection Matrix**: Stores link quality (0-63) and dirty flags for each node pair
 //!   - Lower 6 bits: link quality value (0 = no connection, 63 = excellent)
-//!   - Upper 2 bits: dirty counter for aging and cleanup
+//!   - Upper 2 bits: dirty counter for aging and cleanup if no new data received from a node for a long time
 //!
 //! - **Echo Protocol**: Periodic broadcast-response mechanism for topology discovery
 //!   - Nodes broadcast echo requests at configurable intervals
 //!   - Neighbors respond with echo replies containing connection quality data
 //!   - Gathering phase collects responses within a timeout window
+//!   - After gathering, nodes broadcast echo results with the received echo responses data
 //!
-//! - **Relay Decision Logic**: Multi-factor scoring to determine if/how to forward messages
-//!   - Factors: hop count, destination awareness, connection quality, message type
-//!   - Result: None (don't relay), SendMessage (relay), or AlreadyHaveMessage (duplicate)
-//!
-//! ## Connection Quality
-//!
-//! Link quality is measured using RSSI (Received Signal Strength Indicator) values:
-//! - Range: 0-63 (6-bit value)
-//! - Updated dynamically as packets are received
-//! - Used to prefer stronger relay paths
-//! - Aged out using dirty flags to remove stale connections
+//! - **Relay Decision Logic**:
+//!   - Relay decisions are made of based on connection quality to all known nodes and the list of nodes that have already relayed the message (to avoid loops)
+//!   - Result can be: None (don't relay) or relay with a given delay based on score calculation (better coverage nodes relay earlier)
+//!   - To be relayed messages are queued in the wait pool.
 //!
 //! ## Design Considerations
 //!
-//! - Connection matrix size is compile-time configurable (CONNECTION_MATRIX_SIZE)
-//! - Echo intervals and timeouts are runtime configurable
-//! - Scoring algorithm balances hop count minimization with connection quality
+//! - Connection matrix size is compile-time configurable (CONNECTION_MATRIX_SIZE) - hw memory limits
+//! - Echo intervals and timeouts are runtime configurable - based on blockchain configuration
 //! - Wait pool enables request-response pattern tracking
-//! - Dirty flag mechanism prevents unbounded memory of stale connections
 
 use core::cmp::{max, min};
 use embassy_time::{Duration, Instant};
@@ -51,24 +45,25 @@ use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
-use crate::ECHO_RESPONSES_WAIT_POOL_SIZE;
+use crate::wait_pool::WaitPool;
 use crate::MessageProcessingResult;
 use crate::RadioPacket;
 use crate::ScoringMatrix;
-use crate::wait_pool::WaitPool;
+use crate::ECHO_RESPONSES_WAIT_POOL_SIZE;
 use crate::{MessageType, RadioMessage};
 
 /// Type alias for the connection quality matrix
 ///
-/// A 2D array tracking link quality between all node pairs in the network.
+/// A 2D array tracking link quality between all node pairs in the neighborhood.
 /// However we use this data structure also in wait_pool.rs it belongs here logically
-/// The matrix is indexed by node position (not node ID), where:
-/// - `ConnectionMatrix[i][j]` = link quality from node i to node j
+/// The matrix is indexed by a position from a separate data structures(node_connections) that maps node id's to an index.
+///
+/// In scoring matrix each element stores:
 /// - Lower 6 bits: quality value (0-63)
-/// - Upper 2 bits: dirty counter for aging stale connections
+/// - Upper 2 bits: dirty counter for aging stale connections (0 - fresh, 3 - aged)
 ///
 /// # Size
-/// The matrix size is fixed at compile-time by `CONNECTION_MATRIX_SIZE` (100 nodes),
+/// The matrix size is fixed at compile-time by `CONNECTION_MATRIX_SIZE`,
 /// limiting the maximum number of nodes that can be tracked simultaneously.
 ///
 /// # Usage
@@ -84,7 +79,7 @@ pub(crate) type ConnectionMatrix = [[u8; crate::CONNECTION_MATRIX_SIZE]; crate::
 /// - Upper 2 bits: dirty counter for aging stale connections
 ///
 /// # Size
-/// The row size is fixed at compile-time by `CONNECTION_MATRIX_SIZE` (100 nodes),
+/// The row size is fixed at compile-time by `CONNECTION_MATRIX_SIZE`,
 /// matching the number of nodes tracked in the connection matrix.
 ///
 /// # Usage
@@ -114,7 +109,7 @@ const _: () = assert!(MAX_DIRTY_COUNT <= (DIRTY_MASK >> DIRTY_SHIFT), "MAX_DIRTY
 /// Maximum dirty count before connection is reset to zero
 ///
 /// When a connection reaches this dirty count without updates, it's
-/// considered stale and removed from the matrix.
+/// considered stale and removed from the matrix (zeroed out).
 const MAX_DIRTY_COUNT: u8 = 3;
 
 /// Result of evaluating whether to relay a message
@@ -137,7 +132,7 @@ pub(crate) enum RelayResult {
 /// Creates an empty connection quality array
 ///
 /// Helper function to initialize connection arrays with zeros.
-fn empty_connections() -> ConnectionMatrixRow {
+const fn empty_connections() -> ConnectionMatrixRow {
     [0; crate::CONNECTION_MATRIX_SIZE]
 }
 
@@ -155,10 +150,10 @@ fn empty_connections() -> ConnectionMatrixRow {
 ///
 /// # Timing Strategy
 ///
-/// Each echo response is given a random delay up to `echo_gathering_timeout * 30` seconds.
+/// Each echo response is given a random delay up to half of `echo_gathering_timeout`.
 /// This staggers responses across time, preventing burst traffic that could overwhelm
 /// the network when many nodes receive the same echo request broadcast.
-#[derive(Clone, Copy, Debug)]
+#[derive(Copy, Clone)]
 struct EchoResponseWaitPoolItem {
     /// Scheduled time when this echo response should be sent
     send_time: Instant,
@@ -195,17 +190,16 @@ impl EchoResponseWaitPoolItem {
 /// # Structure
 ///
 /// - **Connection Matrix**: NxN grid tracking link quality between all known nodes
-/// - **Wait Pool**: Pending messages awaiting relay evaluation
+/// - **Wait Pool**: Pending messages awaiting relaying based on timing and scoring
 /// - **Echo System**: Active network probing to discover and measure connections
 ///
 /// # Generic Parameters
 ///
 /// * `CONNECTION_MATRIX_SIZE` - Maximum number of nodes to track in the matrix
-/// * `WAIT_POOL_SIZE` - Maximum number of messages pending relay decision
+/// * `WAIT_POOL_SIZE` - Maximum number of messages waiting for relaying
 pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> {
     /// Connection quality matrix (NxN)
     ///
-    /// Matrix[i][j] stores the link quality from node i to node j.
     /// Lower 6 bits: quality (0-63), upper 2 bits: dirty counter.
     connection_matrix: ConnectionMatrix,
 
@@ -217,7 +211,7 @@ pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_P
     /// Number of known nodes in the network
     connected_nodes_count: usize,
 
-    /// Wait pool for messages pending relay decisions
+    /// Wait pool for messages waiting for relaying
     wait_pool: WaitPool<WAIT_POOL_SIZE, CONNECTION_MATRIX_SIZE>,
 
     /// Buffered echo responses waiting to be sent
@@ -257,9 +251,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     /// # Arguments
     ///
     /// * `echo_request_minimal_interval` - Minimum seconds between echo broadcasts
-    /// * `echo_messages_target_interval` - Target messages received between echoes
-    /// * `echo_gathering_timeout` - Seconds to collect echo responses
-    /// * `wait_position_delay` - Base delay for relay position calculation
+    /// * `echo_messages_target_interval` - Target timeout between echo messages (adaptive)
+    /// * `echo_gathering_timeout` - Minutes to collect echo responses
+    /// * `wait_position_delay` - Base delay for relay waiting time calculation based on position
     /// * `scoring_matrix` - Configuration for relay scoring
     /// * `own_node_id` - This node's unique identifier
     /// * `rng_seed` - Seed for random number generation
@@ -337,7 +331,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     /// * `Some(RadioMessage)` - Pool was full, returns displaced echo to send immediately
     ///
     /// # Behavior
-    /// - Adds random delay up to (echo_gathering_timeout * 30) seconds
+    /// - Adds random delay up to half of echo_gathering_timeout(that is measured in minutes).
     /// - If pool is full, displaces the echo with the earliest send time (because we send the oldest one immediately)
     /// - Displaced echo is returned for immediate transmission
     fn add_echo_response(&mut self, node_id: u32, quality: u8) -> Option<RadioMessage> {
@@ -387,7 +381,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     ///
     /// # Tasks Processed
     /// 1. **Echo Request**: Broadcasts topology discovery at configured intervals
-    /// 2. **Echo Result**: Sends aggregated connection matrix after gathering phase
+    /// 2. **Echo Result**: Broadcasts aggregated connection results after gathering phase
     /// 3. **Wait Pool**: Activates messages whose relay delay has expired
     /// 4. **Echo Responses**: Sends queued echo replies when their delay expires
     ///
@@ -395,7 +389,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     /// - Echo requests: Adaptive interval based on network size
     /// - Echo results: After echo_gathering_timeout window
     /// - Wait pool: Per-message calculated delay based on relay position
-    /// - Echo responses: Random delay up to gathering timeout
+    /// - Echo responses: Random delay up to the half of echo_gathering_timeout
 
     #[allow(dead_code)]
     const _ASSERT_CONNECTION_MATRIX_SQUARE_FITS_U32: () = assert!(
@@ -439,10 +433,10 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             let mut echo_result = RadioMessage::echo_result_with(self.own_node_id);
             for i in 1..self.connected_nodes_count {
                 let neighbor_node = self.connection_matrix_nodes[i];
-                let send_link_matrix_item = self.connection_matrix[0][i]; // Get the link quality from the connection matrix
-                let receive_link_matrix_item = self.connection_matrix[i][0]; // Get the link quality from the connection matrix
-                let send_link_quality = send_link_matrix_item & QUALITY_MASK; // Get the link quality from the connection matrix
-                let receive_link_quality = receive_link_matrix_item & QUALITY_MASK; // Get the link quality from the connection matrix
+                let send_link_matrix_item = self.connection_matrix[0][i];
+                let receive_link_matrix_item = self.connection_matrix[i][0];
+                let send_link_quality = send_link_matrix_item & QUALITY_MASK;
+                let receive_link_quality = receive_link_matrix_item & QUALITY_MASK;
                 if (send_link_matrix_item & DIRTY_MASK == 0 || receive_link_matrix_item & DIRTY_MASK == 0)
                     && (send_link_quality != 0 || receive_link_quality != 0)
                     && echo_result
@@ -502,12 +496,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         //Linear search is fine here, as CONNECTION_MATRIX_SIZE is limited to small numbers (hardware limitation, because of memory size). We don't use more complex data structures for optimal performance.
         let sender_index = self.connection_matrix_nodes.iter().position(|&id| id == packet.sender_node_id()).unwrap_or(0);
         let sender_connections = if sender_index > 0 {
-            self.connection_matrix[sender_index][0] = link_quality;
+            self.connection_matrix[sender_index][0] = link_quality; //also reset dirty counter to 0
             self.connection_matrix[sender_index]
         } else {
             empty_connections()
         };
 
+        // Update the wait pool too
         self.wait_pool
             .update_with_received_packet(packet, &self.connection_matrix, &self.connection_matrix[0], &sender_connections);
     }
@@ -615,13 +610,12 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     self.connection_matrix[sender_index][i] = 0;
                 } else {
                     // preserve existing link quality bits, update only the dirty counter
+                    //The qualities will be updated when we receive echo responses and echo results
                     self.connection_matrix[sender_index][i] = (counter << DIRTY_SHIFT) | (value & QUALITY_MASK);
                 }
             }
 
-            // Do not overwrite the cell here; only mark dirty above. Quality is preserved per tests.
             //send a reply echo message
-            //let echo_response = RadioMessage::new_echo(self.own_node_id, message.sender_node_id(), last_link_quality);
             let result_opt = self.add_echo_response(message.sender_node_id(), last_link_quality);
 
             if let Some(result) = result_opt {
@@ -643,8 +637,10 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 if let Some(target_index) = target_index_opt {
                     // Update the connection matrix with the link quality
                     // Record last link quality from sender to self (column 0)
+                    // also reset dirty counter to 0
                     self.connection_matrix[sender_index][0] = last_link_quality;
                     // Record echo-reported link from sender -> target (row: sender, col: target)
+                    // also reset dirty counter to 0
                     self.connection_matrix[sender_index][target_index] = link_quality;
                 }
             }
@@ -673,7 +669,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     let send_link_quality = echo_result_item.send_link_quality;
                     let receive_link_quality = echo_result_item.receive_link_quality;
                     if let Some(target_index) = target_index_opt {
-                        // Update the connection matrix with the link quality
+                        // Update the connection matrix with the link quality and reset dirty counter to 0
                         self.connection_matrix[sender_index][target_index] = send_link_quality;
                         self.connection_matrix[target_index][sender_index] = receive_link_quality;
                     }
@@ -702,6 +698,9 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             return RelayResult::AlreadyHaveMessage;
         }
 
+        // In this point we not record any new messages, we only will handle them if we get them
+        // from the application layer after checking
+
         RelayResult::None
     }
 
@@ -723,10 +722,6 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     /// - **SendReplyTransaction**: Send transaction as reply to mempool request
     /// - **NewSupportAdded**: Relay support signature to network
     ///
-    /// # Wait Pool Behavior
-    /// - Messages from application get priority (no sender connections)
-    /// - Sender connections used for received messages to score relay position
-    /// - Specific requestor targeting for block part responses
     pub(crate) fn process_processing_result(&mut self, result: MessageProcessingResult) {
         match result {
             MessageProcessingResult::RequestedBlockNotFound(sequence) => {
@@ -829,7 +824,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 self.wait_pool
                     .add_or_update_message(message, &self.connection_matrix, &self.connection_matrix[0], &sender_connections, None);
             }
-            _ => { /* Ignore other results */ }
+            MessageProcessingResult::AlreadyHaveMessage(_, _, _) => { /*We don't have tasks for already processed messages here. */ }
         }
     }
 }

@@ -4,7 +4,7 @@
 
 - Finish embedded example project
 - Documentation
-  - Review comments by hand (OK: lib.rs, tx_scheduler, echo.rs, link_quality_calculations.rs, mod.rs (both), simulator.rs,rp_lora_sx1262.rs, radio_packet.rs,radio_message.rs)
+  - Review comments by hand (OK: lib.rs, tx_scheduler, echo.rs, link_quality_calculations.rs, mod.rs (both), simulator.rs,rp_lora_sx1262.rs, radio_packet.rs,radio_message.rs,relay_manager.rs)
   - Write a comprehensive README.md
 
 ## Implement this functions during blockchain development
