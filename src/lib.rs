@@ -99,7 +99,7 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 // Re-export types from messages module
-pub use messages::{EchoResultItem, EchoResultIterator, MessageType, RadioMessage, RadioPacket};
+pub use messages::{EchoResultItem, EchoResultIterator, MessageError, MessageType, RadioMessage, RadioPacket};
 
 // Re-export link quality utilities from radio devices module
 pub use radio_devices::{calculate_link_quality, normalize};

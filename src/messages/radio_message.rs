@@ -26,7 +26,7 @@
 //!
 //! ## Multi-Packet Messages
 //!
-//! Large messages (AddBlock, AddTransaction, Support) are automatically fragmented into
+//! Large messages (AddBlock, AddTransaction) are automatically fragmented into
 //! multiple packets for transmission. The message header contains:
 //! - Message type and sender node ID (bytes 0-4)
 //! - Sequence number (bytes 5-8, for applicable message types)
@@ -93,7 +93,6 @@ pub(crate) fn checksum(data: &[u8]) -> u32 {
 ///     Err(e) => println!("Other error: {:?}", e),
 /// }
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub enum PacketError {
     /// Packet count is zero or exceeds maximum allowed packets
@@ -150,6 +149,68 @@ impl core::fmt::Display for PacketError {
 #[cfg(feature = "std")]
 impl std::error::Error for PacketError {}
 
+/// Error type for message operations
+///
+/// Represents failure conditions when an operation requires a specific
+/// message type or encounters size constraints.
+///
+/// # Usage
+///
+/// This error type is returned by methods that only work with certain
+/// message types or have size limitations, such as operations specific
+/// to multi-packet messages or mempool item operations.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use moonblokz_radio_lib::MessageError;
+///
+/// match message.add_packet_list(packet_list) {
+///     Ok(()) => println!("Packet list added successfully"),
+///     Err(MessageError::NotMultiPacket) => println!("Message type doesn't support packet lists"),
+/// }
+///
+/// match message.add_mempool_item(100, 0x12345678) {
+///     Ok(()) => println!("Mempool item added"),
+///     Err(MessageError::NotRequestNewMempoolItem) => println!("Not a mempool request message"),
+///     Err(MessageError::MessageSizeOverflow) => println!("Message size limit exceeded"),
+/// }
+/// ```
+#[cfg_attr(feature = "std", derive(Debug))]
+pub enum MessageError {
+    /// Message type does not support multi-packet operations
+    ///
+    /// The operation requires an AddBlock or AddTransaction message type,
+    /// but the message is of a different type that doesn't support packet lists.
+    NotMultiPacket,
+
+    /// Message type is not RequestNewMempoolItem
+    ///
+    /// The operation requires a RequestNewMempoolItem message type,
+    /// but the message is of a different type.
+    NotRequestNewMempoolItem,
+
+    /// Message size would exceed the maximum allowed size
+    ///
+    /// Adding the requested data would cause the message to exceed
+    /// the maximum radio packet size (RADIO_PACKET_SIZE).
+    MessageSizeOverflow,
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MessageError::NotMultiPacket => write!(f, "message type does not support packet lists (must be AddBlock or AddTransaction)"),
+            MessageError::NotRequestNewMempoolItem => write!(f, "message type must be RequestNewMempoolItem"),
+            MessageError::MessageSizeOverflow => write!(f, "message size would exceed maximum packet size"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for MessageError {}
+
 /// Message types supported by the radio communication protocol
 ///
 /// Each message type serves a specific purpose in the mesh network protocol,
@@ -168,7 +229,7 @@ impl std::error::Error for PacketError {}
 #[derive(Clone, Copy)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub enum MessageType {
-    /// Request echo from a node to measure link quality (0x01)
+    /// Request echo from neighbors to measure link quality (0x01)
     RequestEcho = 0x01,
 
     /// Response to echo request with link quality data (0x02)
@@ -192,7 +253,7 @@ pub enum MessageType {
     /// Request new mempool items from a node (0x08)
     RequestNewMempoolItem = 0x08,
 
-    /// Support/vote for a block (0x09)
+    /// Support a derivation in consensus algorithm (0x09)
     Support = 0x09,
 }
 
@@ -206,7 +267,7 @@ pub enum MessageType {
 ///
 /// - **Payload**: Up to RADIO_MAX_MESSAGE_SIZE bytes of message data
 /// - **Length**: Actual payload length in use
-/// - **Packets to Send**: Optional tracking for multi-packet transmission
+/// - **Packets to Send**: Optional filter for multi-packet transmission (to send only specific packets)
 ///
 /// # Message Format
 ///
@@ -394,7 +455,7 @@ impl RadioMessage {
         Ok(())
     }
 
-    /// Creates a new RequestEcho message
+    /// Creates a new RequestEcho message (internal use )
     ///
     /// Echo requests are used to probe the network and measure link quality
     /// between nodes. Remote nodes respond with Echo messages containing
@@ -413,7 +474,7 @@ impl RadioMessage {
     /// let echo_request = RadioMessage::request_echo_with(42);
     /// assert_eq!(echo_request.sender_node_id(), 42);
     /// ```
-    pub fn request_echo_with(node_id: u32) -> Self {
+    pub(crate) fn request_echo_with(node_id: u32) -> Self {
         // Create a new RadioMessage with a specific message type for echo requests
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::RequestEcho as u8;
@@ -426,10 +487,10 @@ impl RadioMessage {
         }
     }
 
-    /// Creates a new Echo response message
+    /// Creates a new Echo response message (internal use)
     ///
     /// Echo messages are sent in response to RequestEcho messages, providing
-    /// link quality information between the responder and the target node.
+    /// link quality information between the requestor and the responder node.
     ///
     /// # Arguments
     /// * `node_id` - The responding node's unique identifier
@@ -438,7 +499,7 @@ impl RadioMessage {
     ///
     /// # Returns
     /// A RadioMessage configured as an Echo response
-    pub fn echo_with(node_id: u32, target_node_id: u32, link_quality: u8) -> Self {
+    pub(crate) fn echo_with(node_id: u32, target_node_id: u32, link_quality: u8) -> Self {
         // Create a new RadioMessage with a specific message type for echo responses
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::Echo as u8;
@@ -455,34 +516,7 @@ impl RadioMessage {
         }
     }
 
-    /// Creates a new RequestFullBlock message
-    ///
-    /// Requests a complete block from the network by its sequence number.
-    /// Nodes with the block will respond with an AddBlock message.
-    ///
-    /// # Arguments
-    /// * `node_id` - The requesting node's unique identifier
-    /// * `sequence` - The sequence number of the desired block
-    ///
-    /// # Returns
-    /// A RadioMessage configured as a RequestFullBlock
-    pub fn request_full_block_with(node_id: u32, sequence: u32) -> Self {
-        // Create a new RadioMessage with a specific message type for full block requests
-        let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
-        payload[0] = MessageType::RequestFullBlock as u8;
-        let node_id_bytes = node_id.to_le_bytes();
-        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
-        let sequence_bytes = sequence.to_le_bytes();
-        payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
-
-        RadioMessage {
-            payload,
-            length: 9,
-            packets_to_send: None,
-        }
-    }
-
-    /// Creates a new EchoResult message
+    /// Creates a new EchoResult message (internal use)
     ///
     /// EchoResult messages aggregate echo response data from multiple nodes,
     /// providing a summary of the network topology as perceived by this node.
@@ -493,7 +527,7 @@ impl RadioMessage {
     ///
     /// # Returns
     /// A RadioMessage configured as an EchoResult (initially empty)
-    pub fn echo_result_with(node_id: u32) -> Self {
+    pub(crate) fn echo_result_with(node_id: u32) -> Self {
         // Create a new RadioMessage with a specific message type for echo results
         let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         payload[0] = MessageType::EchoResult as u8;
@@ -538,6 +572,86 @@ impl RadioMessage {
         self.length += 6;
 
         Ok(())
+    }
+
+    /// Extracts echo data from an Echo message (internal use)
+    ///
+    /// # Returns
+    /// * `Some((target_node_id, link_quality))` - Echo response data
+    ///   - `target_node_id`: Node ID being echoed to
+    ///   - `link_quality`: Measured link quality (0-255)
+    /// * `None` - Message is not Echo type or insufficient data
+    pub(crate) fn get_echo_data(&self) -> Option<(u32, u8)> {
+        // Extract echo data from the message payload
+        if self.message_type() != MessageType::Echo as u8 {
+            return None;
+        }
+        if self.length < 10 {
+            return None; // Not enough data for echo
+        }
+
+        // Target node id is at bytes 5..9, link quality at byte 9
+        let mut target_node_id_bytes = [0u8; 4];
+        target_node_id_bytes.copy_from_slice(&self.payload[5..9]);
+        let target_node_id = u32::from_le_bytes(target_node_id_bytes);
+        let link_quality = self.payload[9];
+
+        Some((target_node_id, link_quality))
+    }
+
+    /// Returns an iterator over echo result data entries (internal use)
+    ///
+    /// Each entry contains neighbor node ID, send link quality, and receiving link quality.
+    ///
+    /// # Returns
+    /// * `Some(EchoResultIterator)` - Iterator over echo result items
+    /// * `None` - Message is not EchoResult type or insufficient data
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if let Some(iterator) = message.get_echo_result_data_iterator() {
+    ///     for item in iterator {
+    ///         println!("Neighbor: {}, Send Quality: {}, Receive Quality: {}",
+    ///                  item.neighbor_node(), item.send_link_quality(), item.receiving_link_quality());
+    ///     }
+    /// }
+    /// ```
+    pub(crate) fn get_echo_result_data_iterator(&self) -> Option<EchoResultIterator> {
+        if self.message_type() != MessageType::EchoResult as u8 {
+            return None;
+        }
+        if self.length < 5 {
+            return None; // Not enough data for echo result
+        }
+
+        Some(EchoResultIterator::with(&self.payload, 5, self.length))
+    }
+
+    /// Creates a new RequestFullBlock message
+    ///
+    /// Requests a complete block from the network by its sequence number.
+    /// Nodes with the block will respond with an AddBlock message.
+    ///
+    /// # Arguments
+    /// * `node_id` - The requesting node's unique identifier
+    /// * `sequence` - The sequence number of the desired block
+    ///
+    /// # Returns
+    /// A RadioMessage configured as a RequestFullBlock
+    pub fn request_full_block_with(node_id: u32, sequence: u32) -> Self {
+        // Create a new RadioMessage with a specific message type for full block requests
+        let mut payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
+        payload[0] = MessageType::RequestFullBlock as u8;
+        let node_id_bytes = node_id.to_le_bytes();
+        payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
+        let sequence_bytes = sequence.to_le_bytes();
+        payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
+
+        RadioMessage {
+            payload,
+            length: 9,
+            packets_to_send: None,
+        }
     }
 
     /// Creates a new RequestBlockPart message (internal use)
@@ -603,6 +717,40 @@ impl RadioMessage {
         self.length += 1;
 
         Ok(())
+    }
+
+    /// Returns an iterator over RequestBlockPart packet indices
+    ///
+    /// Iterates through the list of packet indices being requested from a block.
+    /// Message layout: `[0]=type, [1..5)=sender, [5..9)=sequence, [9..13)=checksum,
+    /// [13]=count, [14..14+count)=indices`
+    ///
+    /// # Returns
+    /// * `Some(RequestBlockPartIterator)` - Iterator over packet indices
+    /// * `None` - Message is not RequestBlockPart type or insufficient data
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if let Some(iterator) = message.get_request_block_part_iterator() {
+    ///     for item in iterator {
+    ///         println!("Requesting packet index: {}", item.packet_index());
+    ///     }
+    /// }
+    /// ```
+    pub fn get_request_block_part_iterator(&self) -> Option<RequestBlockPartIterator> {
+        if self.message_type() != MessageType::RequestBlockPart as u8 {
+            return None;
+        }
+        // need at least up to count byte present
+        if self.length < 14 {
+            return None;
+        }
+        let count = self.payload[13] as usize;
+        // Start of indices immediately after count byte
+        let start = 14usize;
+        // Use count as authoritative; cap to a single radio packet size for safety
+        let end = (start + count).min(RADIO_PACKET_SIZE);
+        Some(RequestBlockPartIterator::with(&self.payload, start, end))
     }
 
     /// Creates a new AddBlock message
@@ -689,14 +837,26 @@ impl RadioMessage {
     /// # Arguments
     /// * `packets_to_send` - Boolean array where `true` means transmit that packet
     ///
-    /// # Note
-    /// Only works with AddBlock and AddTransaction message types. Silently
-    /// returns for other message types.
-    pub fn add_packet_list(&mut self, packets_to_send: [bool; RADIO_MAX_PACKET_COUNT]) {
+    /// # Returns
+    /// * `Ok(())` - Packet list added successfully
+    /// * `Err(MessageTypeError::NotMultiPacket)` - Message is not AddBlock or AddTransaction type
+    ///
+    /// # Example
+    /// ```
+    /// use moonblokz_radio_lib::{RadioMessage, RADIO_MAX_PACKET_COUNT};
+    ///
+    /// let mut message = RadioMessage::add_block_with(1, 42, &[1, 2, 3]);
+    /// let mut packet_list = [false; RADIO_MAX_PACKET_COUNT];
+    /// packet_list[0] = true; // Send only first packet
+    /// packet_list[1] = true; // Send only second packet
+    /// message.add_packet_list(packet_list).unwrap();
+    /// ```
+    pub fn add_packet_list(&mut self, packets_to_send: [bool; RADIO_MAX_PACKET_COUNT]) -> Result<(), MessageError> {
         if self.message_type() != MessageType::AddBlock as u8 && self.message_type() != MessageType::AddTransaction as u8 {
-            return; // Only AddBlock and AddTransaction messages can have packet lists
+            return Err(MessageError::NotMultiPacket);
         }
         self.packets_to_send = Some(packets_to_send);
+        Ok(())
     }
 
     /// Creates a new AddTransaction message
@@ -743,9 +903,37 @@ impl RadioMessage {
         }
     }
 
+    /// Extracts transaction data from an AddTransaction message
+    ///
+    /// # Returns
+    /// * `Some((anchor_sequence, checksum, payload))` - Transaction data tuple
+    ///   - `anchor_sequence`: Sequence number of the anchor block
+    ///   - `checksum`: CRC32C checksum of the transaction payload
+    ///   - `payload`: Transaction payload bytes
+    /// * `None` - Message is not AddTransaction type or insufficient data
+    pub fn get_add_transaction_data(&self) -> Option<(u32, u32, &[u8])> {
+        // Extract transaction data from the message payload
+        if self.message_type() != MessageType::AddTransaction as u8 {
+            return None;
+        }
+        if self.length < 13 {
+            return None; // Not enough data for transaction
+        }
+
+        let mut anchor_sequence_bytes = [0u8; 4];
+        anchor_sequence_bytes.copy_from_slice(&self.payload[5..9]);
+        let anchor_sequence = u32::from_le_bytes(anchor_sequence_bytes);
+
+        let mut checksum_bytes = [0u8; 4];
+        checksum_bytes.copy_from_slice(&self.payload[9..13]);
+        let checksum = u32::from_le_bytes(checksum_bytes);
+
+        Some((anchor_sequence, checksum, &self.payload[13..self.length]))
+    }
+
     /// Creates a new RequestNewMempoolItem message
     ///
-    /// Creates an empty message to request mempool state from peers. Mempool items
+    /// Creates an empty message to request mempool state differences from peers. Mempool items
     /// (transactions) can be added to this message using `add_mempool_item()`.
     ///
     /// # Arguments
@@ -786,7 +974,8 @@ impl RadioMessage {
     ///
     /// # Returns
     /// * `Ok(())` - Mempool item added successfully
-    /// * `Err(())` - Message is not RequestNewMempoolItem type or no space remaining
+    /// * `Err(MessageError::NotRequestNewMempoolItem)` - Message is not RequestNewMempoolItem type
+    /// * `Err(MessageError::MessageSizeOverflow)` - No space remaining (would exceed single packet size)
     ///
     /// # Example
     /// ```
@@ -797,15 +986,15 @@ impl RadioMessage {
     /// message.add_mempool_item(101, 0xABCDEF00).unwrap();
     /// ```
     #[allow(clippy::result_unit_err)]
-    pub fn add_mempool_item(&mut self, anchor_sequence: u32, payload_checksum: u32) -> Result<(), ()> {
+    pub fn add_mempool_item(&mut self, anchor_sequence: u32, payload_checksum: u32) -> Result<(), MessageError> {
         // Add a mempool item to the message payload (8 bytes per item)
         if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
-            return Err(());
+            return Err(MessageError::NotRequestNewMempoolItem);
         }
 
         // The message must fit into a single radio packet
         if self.length + 8 > RADIO_PACKET_SIZE {
-            return Err(());
+            return Err(MessageError::MessageSizeOverflow);
         }
 
         let sequence_bytes = anchor_sequence.to_le_bytes();
@@ -817,10 +1006,39 @@ impl RadioMessage {
         Ok(())
     }
 
+    /// Returns an iterator over mempool data entries (internal use)
+    ///
+    /// Each entry contains anchor sequence and transaction payload checksum.
+    ///
+    /// # Returns
+    /// * `Some(MempoolIterator)` - Iterator over mempool items
+    /// * `None` - Message is not RequestNewMempoolItem type or insufficient data
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if let Some(iterator) = message.get_mempool_data_iterator() {
+    ///     for item in iterator {
+    ///         println!("Anchor Sequence: {}, Transaction Checksum: {}",
+    ///                  item.anchor_sequence(), item.transaction_payload_checksum());
+    ///     }
+    /// }
+    /// ```
+    pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator> {
+        if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
+            return None;
+        }
+        if self.length < 5 {
+            return None; // Not enough data for mempool state (at least message type + sender_node)
+        }
+
+        Some(MempoolIterator::with(&self.payload, 5, self.length))
+    }
+
     /// Creates a new Support message
     ///
-    /// Creates a message containing a cryptographic signature supporting another
-    /// message. Support messages are used for consensus and validation in the network.
+    /// Creates a message containing a cryptographic signature supporting a block that
+    /// derives from the pre-determined block creator order. Support messages are used
+    /// for consensus and validation in the network.
     ///
     /// # Arguments
     /// * `node_id` - The sender's node ID (the original message sender)
@@ -1018,87 +1236,6 @@ impl RadioMessage {
         self.length
     }
 
-    /// Extracts echo data from an Echo message (internal use)
-    ///
-    /// # Returns
-    /// * `Some((target_node_id, link_quality))` - Echo response data
-    ///   - `target_node_id`: Node ID being echoed to
-    ///   - `link_quality`: Measured link quality (0-255)
-    /// * `None` - Message is not Echo type or insufficient data
-    pub(crate) fn get_echo_data(&self) -> Option<(u32, u8)> {
-        // Extract echo data from the message payload
-        if self.message_type() != MessageType::Echo as u8 {
-            return None;
-        }
-        if self.length < 10 {
-            return None; // Not enough data for echo
-        }
-
-        // Target node id is at bytes 5..9, link quality at byte 9
-        let mut target_node_id_bytes = [0u8; 4];
-        target_node_id_bytes.copy_from_slice(&self.payload[5..9]);
-        let target_node_id = u32::from_le_bytes(target_node_id_bytes);
-        let link_quality = self.payload[9];
-
-        Some((target_node_id, link_quality))
-    }
-
-    /// Returns an iterator over echo result data entries (internal use)
-    ///
-    /// Each entry contains neighbor node ID, send link quality, and receiving link quality.
-    ///
-    /// # Returns
-    /// * `Some(EchoResultIterator)` - Iterator over echo result items
-    /// * `None` - Message is not EchoResult type or insufficient data
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// if let Some(iterator) = message.get_echo_result_data_iterator() {
-    ///     for item in iterator {
-    ///         println!("Neighbor: {}, Send Quality: {}, Receive Quality: {}",
-    ///                  item.neighbor_node(), item.send_link_quality(), item.receiving_link_quality());
-    ///     }
-    /// }
-    /// ```
-    pub(crate) fn get_echo_result_data_iterator(&self) -> Option<EchoResultIterator> {
-        if self.message_type() != MessageType::EchoResult as u8 {
-            return None;
-        }
-        if self.length < 5 {
-            return None; // Not enough data for echo result
-        }
-
-        Some(EchoResultIterator::with(&self.payload, 5, self.length))
-    }
-
-    /// Extracts transaction data from an AddTransaction message
-    ///
-    /// # Returns
-    /// * `Some((anchor_sequence, checksum, payload))` - Transaction data tuple
-    ///   - `anchor_sequence`: Sequence number of the anchor block
-    ///   - `checksum`: CRC32C checksum of the transaction payload
-    ///   - `payload`: Transaction payload bytes
-    /// * `None` - Message is not AddTransaction type or insufficient data
-    pub fn get_add_transaction_data(&self) -> Option<(u32, u32, &[u8])> {
-        // Extract transaction data from the message payload
-        if self.message_type() != MessageType::AddTransaction as u8 {
-            return None;
-        }
-        if self.length < 13 {
-            return None; // Not enough data for transaction
-        }
-
-        let mut anchor_sequence_bytes = [0u8; 4];
-        anchor_sequence_bytes.copy_from_slice(&self.payload[5..9]);
-        let anchor_sequence = u32::from_le_bytes(anchor_sequence_bytes);
-
-        let mut checksum_bytes = [0u8; 4];
-        checksum_bytes.copy_from_slice(&self.payload[9..13]);
-        let checksum = u32::from_le_bytes(checksum_bytes);
-
-        Some((anchor_sequence, checksum, &self.payload[13..self.length]))
-    }
-
     /// Returns the sequence number from messages that have one
     ///
     /// # Returns
@@ -1122,7 +1259,7 @@ impl RadioMessage {
         Some(u32::from_le_bytes(sequence_bytes))
     }
 
-    /// Checks if this message is a reply to another message
+    /// Checks if this message is a reply to another message (internal use)
     ///
     /// Determines message-response relationships by checking message types and
     /// matching identifiers (node IDs, sequence numbers, checksums).
@@ -1137,7 +1274,7 @@ impl RadioMessage {
     /// - Echo replies to RequestEcho (match sender node ID)
     /// - AddBlock replies to RequestFullBlock (match sequence)
     /// - AddTransaction replies to RequestNewMempoolItem (match anchor_sequence + checksum)
-    pub fn is_reply_to(&self, message: &RadioMessage) -> bool {
+    pub(crate) fn is_reply_to(&self, message: &RadioMessage) -> bool {
         if self.message_type() == MessageType::Echo as u8 {
             if message.message_type() != MessageType::RequestEcho as u8 {
                 return false; // Only Echo messages can reply to RequestEcho
@@ -1179,34 +1316,6 @@ impl RadioMessage {
         false
     }
 
-    /// Returns an iterator over mempool data entries (internal use)
-    ///
-    /// Each entry contains anchor sequence and transaction payload checksum.
-    ///
-    /// # Returns
-    /// * `Some(MempoolIterator)` - Iterator over mempool items
-    /// * `None` - Message is not RequestNewMempoolItem type or insufficient data
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// if let Some(iterator) = message.get_mempool_data_iterator() {
-    ///     for item in iterator {
-    ///         println!("Anchor Sequence: {}, Transaction Checksum: {}",
-    ///                  item.anchor_sequence(), item.transaction_payload_checksum());
-    ///     }
-    /// }
-    /// ```
-    pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator> {
-        if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
-            return None;
-        }
-        if self.length < 5 {
-            return None; // Not enough data for mempool state (at least message type + sender_node)
-        }
-
-        Some(MempoolIterator::with(&self.payload, 5, self.length))
-    }
-
     /// Returns the payload checksum (internal use)
     ///
     /// # Returns
@@ -1223,40 +1332,6 @@ impl RadioMessage {
         let mut checksum_bytes = [0u8; 4];
         checksum_bytes.copy_from_slice(&self.payload[9..13]);
         Some(u32::from_le_bytes(checksum_bytes))
-    }
-
-    /// Returns an iterator over RequestBlockPart packet indices
-    ///
-    /// Iterates through the list of packet indices being requested from a block.
-    /// Message layout: `[0]=type, [1..5)=sender, [5..9)=sequence, [9..13)=checksum,
-    /// [13]=count, [14..14+count)=indices`
-    ///
-    /// # Returns
-    /// * `Some(RequestBlockPartIterator)` - Iterator over packet indices
-    /// * `None` - Message is not RequestBlockPart type or insufficient data
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// if let Some(iterator) = message.get_request_block_part_iterator() {
-    ///     for item in iterator {
-    ///         println!("Requesting packet index: {}", item.packet_index());
-    ///     }
-    /// }
-    /// ```
-    pub fn get_request_block_part_iterator(&self) -> Option<RequestBlockPartIterator> {
-        if self.message_type() != MessageType::RequestBlockPart as u8 {
-            return None;
-        }
-        // need at least up to count byte present
-        if self.length < 14 {
-            return None;
-        }
-        let count = self.payload[13] as usize;
-        // Start of indices immediately after count byte
-        let start = 14usize;
-        // Use count as authoritative; cap to a single radio packet size for safety
-        let end = (start + count).min(RADIO_PACKET_SIZE);
-        Some(RequestBlockPartIterator::with(&self.payload, start, end))
     }
 
     /// Validates the payload checksum (internal use)
@@ -1806,7 +1881,7 @@ mod tests {
 
         let mut b = RadioMessage::request_block_part_with(9999, 0xCAFEBABE, 0x1234_5678);
         b.add_packet_index_to_request_block_part(9).unwrap(); // count = 1
-        // Equality ignores sender for this type, compares seq/checksum and count of requested parts
+                                                              // Equality ignores sender for this type, compares seq/checksum and count of requested parts
         assert_eq!(a, b);
 
         // Different count of packet indices -> not equal under current semantics
@@ -1991,7 +2066,7 @@ mod tests {
         // This should not panic due to bounds checking, should return an error
         let result = msg.add_packet(&packet);
         assert!(result.is_err(), "Should reject malformed packet");
-        assert_eq!(result.unwrap_err(), PacketError::InvalidPacketCount);
+        assert!(result.unwrap_err() as u8 == PacketError::InvalidPacketCount as u8);
 
         // Message should still be valid (unchanged)
         assert!(msg.length <= RADIO_MAX_MESSAGE_SIZE);
