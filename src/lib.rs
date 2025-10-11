@@ -221,7 +221,7 @@ pub const MAX_NODE_COUNT: usize = 1;
 /// let config = RadioConfiguration {
 ///     delay_between_tx_packets: 200,      // 200 milliseconds between packets
 ///     delay_between_tx_messages: 20,    // 20 seconds between messages
-///     echo_request_minimal_interval: 86400, // Echo max frequency is every 24 hours
+///     echo_request_minimal_interval: 1440, // Echo max frequency is every 24 hours (1440 minutes)
 ///     echo_messages_target_interval: 100,   // Target 100 seconds between echo messages by ourselves or neighbors
 ///     echo_gathering_timeout: 10,           // Wait 10 minutes for echo responses
 ///     relay_position_delay: 10,             // 10 second delay for relaying by calculated position
@@ -242,11 +242,11 @@ pub struct RadioConfiguration {
     /// Provides fair channel access and prevents a single node from monopolizing the spectrum and handles duty cycle limits.
     pub delay_between_tx_messages: u8,
 
-    /// Minimum interval in seconds between echo request broadcasts
+    /// Minimum interval in minutes between echo request broadcasts
     ///
     /// Echo requests probe the network to discover neighbors and measure connection quality.
     /// Lower values provide more frequent topology updates but increase network traffic.
-    pub echo_request_minimal_interval: u32,
+    pub echo_request_minimal_interval: u16,
 
     /// Target number of seconds between echo messages by ourselves or neighbors
     ///
@@ -1189,7 +1189,7 @@ mod tests {
         let _cfg = RadioConfiguration {
             delay_between_tx_packets: 1,
             delay_between_tx_messages: 20,
-            echo_request_minimal_interval: 86400,
+            echo_request_minimal_interval: 1440,
             echo_messages_target_interval: 100,
             echo_gathering_timeout: 10,
             relay_position_delay: 10,

@@ -185,7 +185,7 @@ impl LastReceivedMessages {
 /// * `rx_packet_queue_receiver` - Receives packets from radio device
 /// * `rx_state_queue_sender` - Signals RX state to TX scheduler
 /// * `process_result_queue_receiver` - Receives processing results from application
-/// * `echo_request_minimal_interval` - Minimum time between echo requests (seconds)
+/// * `echo_request_minimal_interval` - Minimum time between echo requests (minutes)
 /// * `echo_messages_target_interval` - Target number of messages between echoes
 /// * `echo_gathering_timeout` - Time to collect echo responses (seconds)
 /// * `relay_position_delay` - Base delay for relay position calculation (seconds)
@@ -200,7 +200,7 @@ pub(crate) async fn rx_handler_task(
     rx_packet_queue_receiver: RxPacketQueueReceiver,
     rx_state_queue_sender: RxStateQueueSender,
     process_result_queue_receiver: ProcessResultQueueReceiver,
-    echo_request_minimal_interval: u32,
+    echo_request_minimal_interval: u16,
     echo_messages_target_interval: u8,
     echo_gathering_timeout: u8,
     relay_position_delay: u8,

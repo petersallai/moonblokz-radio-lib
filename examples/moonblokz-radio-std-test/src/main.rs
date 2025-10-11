@@ -3,11 +3,11 @@ use embassy_futures::select::select_array;
 use embassy_time::{Duration, Timer};
 use env_logger;
 use env_logger::Builder;
-use log::LevelFilter;
 use log::log;
+use log::LevelFilter;
+use moonblokz_radio_lib::radio_device_echo::RadioDevice;
 use moonblokz_radio_lib::RadioConfiguration;
 use moonblokz_radio_lib::RadioMessage;
-use moonblokz_radio_lib::radio_device_echo::RadioDevice;
 use moonblokz_radio_lib::{RadioCommunicationManager, ScoringMatrix};
 
 #[embassy_executor::task(pool_size = 10)]
@@ -37,7 +37,7 @@ async fn main(spawner: Spawner) {
     let radio_configuration = RadioConfiguration {
         delay_between_tx_packets: 1,
         delay_between_tx_messages: 10,
-        echo_request_minimal_interval: 86400,
+        echo_request_minimal_interval: 1440,
         echo_messages_target_interval: 100,
         echo_gathering_timeout: 10,
         relay_position_delay: 1,
@@ -57,7 +57,7 @@ async fn main(spawner: Spawner) {
     let radio_configuration = RadioConfiguration {
         delay_between_tx_packets: 1,
         delay_between_tx_messages: 10,
-        echo_request_minimal_interval: 86400,
+        echo_request_minimal_interval: 1440,
         echo_messages_target_interval: 100,
         echo_gathering_timeout: 10,
         relay_position_delay: 1,

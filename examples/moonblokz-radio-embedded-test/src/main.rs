@@ -150,7 +150,7 @@ async fn main(spawner: Spawner) {
     let radio_configuration = RadioConfiguration {
         delay_between_tx_packets: 200,
         delay_between_tx_messages: 5,
-        echo_request_minimal_interval: 10,
+        echo_request_minimal_interval: 1,
         echo_messages_target_interval: 100,
         echo_gathering_timeout: 1,
         relay_position_delay: 5,

@@ -227,8 +227,8 @@ pub(crate) struct RelayManager<const CONNECTION_MATRIX_SIZE: usize, const WAIT_P
     /// End time for current echo gathering phase (if active)
     echo_gathering_end_time: Option<Instant>,
 
-    /// Minimum seconds between echo broadcasts
-    echo_request_minimal_interval: u32,
+    /// Minimum minutes between echo broadcasts
+    echo_request_minimal_interval: u16,
 
     /// Target number of timeouts between echoes for the visible parts of the network (adaptive)
     echo_messages_target_interval: u8,
@@ -251,7 +251,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     ///
     /// # Arguments
     ///
-    /// * `echo_request_minimal_interval` - Minimum seconds between echo broadcasts
+    /// * `echo_request_minimal_interval` - Minimum minutes between echo broadcasts
     /// * `echo_messages_target_interval` - Target timeout between echo messages (adaptive)
     /// * `echo_gathering_timeout` - Minutes to collect echo responses
     /// * `wait_position_delay` - Base delay for relay waiting time calculation based on position
@@ -259,7 +259,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     /// * `own_node_id` - This node's unique identifier
     /// * `rng_seed` - Seed for random number generation
     pub(crate) fn with(
-        echo_request_minimal_interval: u32,
+        echo_request_minimal_interval: u16,
         echo_messages_target_interval: u8,
         echo_gathering_timeout: u8,
         wait_position_delay: u8,
@@ -275,7 +275,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
 
             wait_pool: WaitPool::with(wait_position_delay as u64, scoring_matrix, own_node_id, rng.next_u64()),
             echo_responses_wait_pool: [None; ECHO_RESPONSES_WAIT_POOL_SIZE],
-            next_echo_request_time: Instant::now() + Duration::from_secs(rng.next_u64() % echo_request_minimal_interval as u64),
+            next_echo_request_time: Instant::now() + Duration::from_secs(rng.next_u64() % (echo_request_minimal_interval as u64 * 60)),
             echo_gathering_end_time: None,
             echo_request_minimal_interval,
             echo_messages_target_interval,
@@ -414,7 +414,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             let echo_request_interval = self.rng.next_u32()
                 % (2 * max(
                     self.echo_messages_target_interval as u32 * message_count as u32,
-                    self.echo_request_minimal_interval,
+                    self.echo_request_minimal_interval as u32 * 60,
                 ))
                 + self.rng.next_u32() % (self.echo_gathering_timeout as u32 * 60);
 
