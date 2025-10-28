@@ -15,4 +15,3 @@
 ## Roadmap items
 
 - Moving node handling is not implemented (maybe it is ok, but needs testing)
-- Analyze the effect to refactor RadioMessage and RadioPacket to more idimotic enum form (pro: type-safe structure, easier getters, con: more complex serialization, deserializaton logic, complex structs/enums, more complex message size limit calculations)

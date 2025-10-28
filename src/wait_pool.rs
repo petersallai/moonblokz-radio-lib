@@ -422,6 +422,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         {
             *message_conn = sender_conn & QUALITY_MASK;
         }
+        new_item.message_connections[0] = 63; //own connection is always 63, because we already received the message
 
         if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
             return;

@@ -104,13 +104,6 @@ pub use messages::{EchoResultItem, EchoResultIterator, MessageError, MessageType
 // Re-export link quality utilities from radio devices module
 pub use radio_devices::{calculate_link_quality, normalize};
 
-/// Size of the header for multi-packet messages (13 bytes)
-const RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE: usize = 13;
-
-/// Size of the header for individual packets within multi-packet messages (15 bytes)
-/// Includes the message header size plus 2 bytes for packet index and total packet count
-const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15;
-
 // Hardware dependent constants that affect compatibility between nodes
 // Changing these values will make nodes incompatible with each other
 
@@ -125,15 +118,6 @@ pub const RADIO_PACKET_SIZE: usize = 215;
 /// Messages larger than a single packet are automatically fragmented.
 /// **Compatibility critical**: All nodes in the network must use the same value.
 pub const RADIO_MAX_MESSAGE_SIZE: usize = 2013;
-
-/// Maximum number of packets a single message can be fragmented into
-///
-/// Calculated via ceiling division to ensure we can accommodate RADIO_MAX_MESSAGE_SIZE.
-/// **Compatibility critical**: Derived from RADIO_PACKET_SIZE and RADIO_MAX_MESSAGE_SIZE.
-pub const RADIO_MAX_PACKET_COUNT: usize = RADIO_MAX_MESSAGE_SIZE.div_ceil(RADIO_PACKET_SIZE);
-
-/// Compile-time assertion that packet count fits in a u8
-const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");
 
 // Hardware dependent constants that only affect efficiency, not compatibility
 // These can be tuned per node without breaking interoperability
@@ -208,6 +192,22 @@ pub const MAX_NODE_COUNT: usize = 1000;
 
 #[cfg(not(feature = "radio-device-simulator"))]
 pub const MAX_NODE_COUNT: usize = 1;
+
+/// Size of the header for multi-packet messages (13 bytes)
+const RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE: usize = 13;
+
+/// Size of the header for individual packets within multi-packet messages (15 bytes)
+/// Includes the message header size plus 2 bytes for packet index and total packet count
+const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15;
+
+/// Maximum number of packets a single message can be fragmented into
+///
+/// Calculated via ceiling division to ensure we can accommodate RADIO_MAX_MESSAGE_SIZE.
+/// **Compatibility critical**: Derived from RADIO_PACKET_SIZE and RADIO_MAX_MESSAGE_SIZE.
+pub const RADIO_MAX_PACKET_COUNT: usize = RADIO_MAX_MESSAGE_SIZE.div_ceil(RADIO_PACKET_SIZE);
+
+/// Compile-time assertion that packet count fits in a u8
+const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");
 
 /// Configuration for radio transmission timing and network behavior
 ///

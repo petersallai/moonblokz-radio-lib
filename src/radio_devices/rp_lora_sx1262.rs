@@ -554,9 +554,10 @@ impl RadioDevice {
                             tx_packet.length
                         );
                     }
-                    // Transmit the packet once: wait for a clear channel, then send and break
+                    // Transmit the packet once: wait for a clear channel, then send and break                    
                     loop {
                         log::trace!("[{}] Starting CAD before transmit", own_node_id);
+                        //On my test hardware CAD sometimes never completes, so add a timeout
                         match select(self.do_cad(own_node_id), Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS))).await {
                             Either::First(Ok(false)) => {
                                 // Channel is clear; attempt a single send then exit loop

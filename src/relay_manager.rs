@@ -740,7 +740,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 );
             }
             MessageProcessingResult::RequestedBlockFound(message) => {
-                log::trace!(
+                log::debug!(
                     "[{}] Requested block found, adding relaying to wait pool for relay: sequence {}",
                     self.own_node_id,
                     message.sequence().unwrap_or(0)
