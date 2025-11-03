@@ -41,6 +41,83 @@ use rand_wyrand::WyRand;
 use crate::MAX_NODE_COUNT;
 use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 
+/// Handle RX state updates and update the delay timeout accordingly
+fn calculate_rx_state_delay_timeout(rxstate: RxState, rx_state_delay_timeout: Instant, delay_between_packets: u16, own_node_id: u32) -> Instant {
+    match rxstate {
+        RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
+            let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
+            let new_delay_timeout = Instant::now() + Duration::from_millis(remaining_packets * delay_between_packets as u64);
+            let updated_timeout = max(rx_state_delay_timeout, new_delay_timeout);
+            log!(
+                log::Level::Trace,
+                "[{}] Multi-packet RX in progress: packet {}/{}, TX delayed for: {} ms",
+                own_node_id,
+                packet_index,
+                total_packet_count,
+                (updated_timeout - Instant::now()).as_millis()
+            );
+            updated_timeout
+        }
+        RxState::PacketedRxEnded => {
+            log!(log::Level::Trace, "[{}] Multi-packet RX ended, clearing TX delay", own_node_id);
+            Instant::now()
+        }
+    }
+}
+
+/// Send all packets of a message to the radio device
+async fn send_message_to_radio(
+    message: &crate::RadioMessage,
+    radio_device_sender: &TxPacketQueueSender,
+    delay_between_packets_duration: Duration,
+    own_node_id: u32,
+) {
+    let packet_count = message.get_packet_count();
+    log!(
+        log::Level::Trace,
+        "[{}] Sending message to radio device: type: {}, packet count: {}",
+        own_node_id,
+        message.message_type(),
+        packet_count
+    );
+
+    for i in 0..packet_count {
+        // Get the packet to send
+        if let Some(packet) = message.get_packet(i) {
+            // Attempt to send the packet to the radio device
+            match radio_device_sender.try_send(packet) {
+                Ok(_) => {
+                    // Successfully sent the packet, update last transmission time
+                    log!(
+                        log::Level::Trace,
+                        "[{}] Sent packet to radio device: packet: {}/{}",
+                        own_node_id,
+                        i + 1,
+                        packet_count
+                    );
+                }
+                Err(embassy_sync::channel::TrySendError::Full(packet)) => {
+                    log!(
+                        log::Level::Warn,
+                        "[{}] TX packet queue full, dropping packet. type: {}",
+                        own_node_id,
+                        packet.message_type()
+                    );
+                }
+            }
+            Timer::after(delay_between_packets_duration).await;
+        } else {
+            log!(
+                log::Level::Error,
+                "[{}] Failed to get packet {}/{} from message",
+                own_node_id,
+                i,
+                message.get_packet_count()
+            );
+        }
+    }
+}
+
 /// TX Scheduler Task
 ///
 /// This task manages the transmission scheduling for radio packets. It ensures that:
@@ -81,90 +158,45 @@ pub(crate) async fn tx_scheduler_task(
     loop {
         match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {
             Either::First(message) => {
-                // Calculate the time since last transmission
-                let elapsed = last_tx_time.elapsed();
+                loop {
+                    // Calculate the time since last transmission
+                    let elapsed = last_tx_time.elapsed();
 
-                // If not enough time has passed, wait for the remaining time (saturating)
-                let remaining_message_delay = if elapsed >= delay_between_messages_duration {
-                    Duration::from_secs(0)
-                } else {
-                    delay_between_messages_duration - elapsed
-                };
+                    // If not enough time has passed, wait for the remaining time (saturating)
+                    let remaining_message_delay = if elapsed >= delay_between_messages_duration {
+                        Duration::from_secs(0)
+                    } else {
+                        delay_between_messages_duration - elapsed
+                    };
 
-                let remaining_rx_state_timeout = rx_state_delay_timeout.saturating_duration_since(Instant::now());
+                    let remaining_rx_state_timeout = rx_state_delay_timeout.saturating_duration_since(Instant::now());
 
-                //get the maximum of the remaining delay and the rx state timeout
-                let mut remaining_delay = max(remaining_message_delay, remaining_rx_state_timeout);
+                    //get the maximum of the remaining delay and the rx state timeout
+                    let mut remaining_delay = max(remaining_message_delay, remaining_rx_state_timeout);
 
-                if remaining_delay > Duration::from_secs(0) {
-                    remaining_delay += Duration::from_millis(rng.next_u64() % tx_maximum_random_delay as u64); // Add a random jitter to the delay
-                    Timer::after(remaining_delay).await;
-                }
-
-                let packet_count = message.get_packet_count();
-                log!(
-                    log::Level::Trace,
-                    "[{}] Sending message to radio device: type: {}, packet count: {}",
-                    own_node_id,
-                    message.message_type(),
-                    packet_count
-                );
-                for i in 0..packet_count {
-                    // Get the packet to send
-                    if let Some(packet) = message.get_packet(i) {
-                        // Attempt to send the packet to the radio device
-                        match radio_device_sender.try_send(packet) {
-                            Ok(_) => {
-                                // Successfully sent the packet, update last transmission time
-                                last_tx_time = Instant::now();
-                                log!(
-                                    log::Level::Trace,
-                                    "[{}] Sent packet to radio device: packet: {}/{}",
-                                    own_node_id,
-                                    i + 1,
-                                    packet_count
-                                );
+                    if remaining_delay > Duration::from_secs(0) {
+                        remaining_delay += Duration::from_millis(rng.next_u64() % tx_maximum_random_delay as u64); // Add a random jitter to the delay
+                        match select(Timer::after(remaining_delay), rx_state_queue_receiver.receive()).await {
+                            Either::First(_) => {
+                                // Timer completed, proceed to send message
+                                break;
                             }
-                            Err(embassy_sync::channel::TrySendError::Full(packet)) => {
-                                log!(
-                                    log::Level::Warn,
-                                    "[{}] TX packet queue full, dropping packet. type: {}",
-                                    own_node_id,
-                                    packet.message_type()
-                                );
+                            Either::Second(rxstate) => {
+                                // RX state update received, recalculate delay
+                                rx_state_delay_timeout = calculate_rx_state_delay_timeout(rxstate, rx_state_delay_timeout, delay_between_packets, own_node_id);
+                                // Continue loop to recalculate delays
                             }
                         }
-                        Timer::after(delay_between_packets_duration).await;
                     } else {
-                        log!(
-                            log::Level::Error,
-                            "[{}] Failed to get packet {}/{} from message",
-                            own_node_id,
-                            i,
-                            message.get_packet_count()
-                        );
+                        break;
                     }
                 }
+                send_message_to_radio(&message, &radio_device_sender, delay_between_packets_duration, own_node_id).await;
+                last_tx_time = Instant::now();
             }
-            Either::Second(rxstate) => match rxstate {
-                RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
-                    let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
-                    let new_delay_timeout = Instant::now() + Duration::from_millis(remaining_packets * delay_between_packets as u64);
-                    rx_state_delay_timeout = max(rx_state_delay_timeout, new_delay_timeout);
-                    log!(
-                        log::Level::Debug,
-                        "[{}] Multi-packet RX in progress: packet {}/{}, TX delayed for: {} ms",
-                        own_node_id,
-                        packet_index,
-                        total_packet_count,
-                        (rx_state_delay_timeout - Instant::now()).as_millis()
-                    );
-                }
-                RxState::PacketedRxEnded => {
-                    rx_state_delay_timeout = Instant::now();
-                    log!(log::Level::Debug, "[{}] Multi-packet RX ended, clearing TX delay", own_node_id);
-                }
-            },
+            Either::Second(rxstate) => {
+                rx_state_delay_timeout = calculate_rx_state_delay_timeout(rxstate, rx_state_delay_timeout, delay_between_packets, own_node_id);
+            }
         }
     }
 }
