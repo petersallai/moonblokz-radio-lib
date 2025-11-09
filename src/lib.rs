@@ -1111,10 +1111,10 @@ impl RadioCommunicationManager {
     ///             let result = process_message(msg);
     ///             manager.report_message_processing_status(result);
     ///         }
-    ///         IncomingMessageItem::CheckIfAlreadyHaveMessage(mtype, seq, csum) => {
-    ///             if database.has_message(mtype, seq, csum) {
+    ///         IncomingMessageItem::CheckIfAlreadyHaveMessage(message_type, sequence, payload_checksum) => {
+    ///             if database.has_message(message_type, sequence, payload_checksum) {
     ///                 manager.report_message_processing_status(
-    ///                     MessageProcessingResult::AlreadyHaveMessage(mtype, seq, csum)
+    ///                     MessageProcessingResult::AlreadyHaveMessage(message_type, sequence, payload_checksum)
     ///                 );
     ///             }
     ///         }
