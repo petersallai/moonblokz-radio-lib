@@ -322,7 +322,8 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                         *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
                     }
 
-                    if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
+                    let score = item.calculate_score(own_connections, &self.scoring_matrix);
+                    if (score < self.scoring_matrix.relay_score_limit as u32 && item.requestor_index.is_none()) || score == 0 {
                         log!(
                             log::Level::Trace,
                             "[{}] Message removed from wait pool: sequence: {}",
@@ -424,9 +425,9 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         }
         new_item.message_connections[0] = 63; //own connection is always 63, because we already received the message
 
-        if new_item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-            return;
-        }
+        let score = new_item.calculate_score(own_connections, &self.scoring_matrix);
+
+        if (score < self.scoring_matrix.relay_score_limit as u32 && requestor_index.is_none()) || score == 0 {}
 
         let position = new_item.calculate_own_position(&new_item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
 
