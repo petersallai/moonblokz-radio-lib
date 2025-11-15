@@ -120,10 +120,10 @@ const MAX_DIRTY_COUNT: u8 = 3;
 /// the default use-case for this item is to report back relayed messages, so the smaller variants are not a real problem here.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum RelayResult {
-    /// Do not relay this message
+    /// No action needed
     None,
 
-    /// Relay this message to the network
+    /// Send a new message to the network
     SendMessage(RadioMessage),
 
     /// Message was already processed (duplicate)
@@ -557,7 +557,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 let mut lowest_quality_index = CONNECTION_MATRIX_SIZE;
                 let mut lowest_quality = 255;
                 for i in 1..CONNECTION_MATRIX_SIZE {
-                    let value = self.connection_matrix[i][0] & QUALITY_MASK; // Get the link quality from the connection matrix
+                    let value = self.connection_matrix[0][i] & QUALITY_MASK; // Get the sending link quality from the connection matrix
                     if value < lowest_quality || lowest_quality_index == CONNECTION_MATRIX_SIZE {
                         lowest_quality = value;
                         lowest_quality_index = i;
