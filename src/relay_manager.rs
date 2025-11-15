@@ -18,13 +18,16 @@
 //!
 //! - **Connection Matrix**: Stores link quality (0-63) and dirty flags for each node pair
 //!   - Lower 6 bits: link quality value (0 = no connection, 63 = excellent)
-//!   - Upper 2 bits: dirty counter for aging and cleanup if no new data received from a node for a long time
+//!   - Upper 2 bits: dirty counter for aging and cleanup. Incremented when this node sends
+//!     an echo request to detect stale connections that haven't updated recently.
 //!
 //! - **Echo Protocol**: Periodic broadcast-response mechanism for topology discovery
 //!   - Nodes broadcast echo requests at configurable intervals
+//!   - When sending an echo request, the dirty counter is incremented for all nodes in the matrix
 //!   - Neighbors respond with echo replies containing connection quality data
 //!   - Gathering phase collects responses within a timeout window
 //!   - After gathering, nodes broadcast echo results with the received echo responses data
+//!   - Echo responses and results reset the dirty counter when updating connection quality
 //!
 //! - **Relay Decision Logic**:
 //!   - Relay decisions are made of based on connection quality to all known nodes and the list of nodes that have already relayed the message (to avoid loops)
@@ -399,6 +402,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
     );
 
     pub(crate) fn process_timed_tasks(&mut self) -> RelayResult {
+        //send a request_echo periodically
         if Instant::now() >= self.next_echo_request_time {
             log::debug!("[{}] Sending echo request", self.own_node_id);
             // Calculate adaptive echo request interval based on network size. This calculation will never overflow as CONNECTION_MATRIX_SIZE is limited to small numbers (hardware limitation, because of memory size). We don't use checks for optimal performance.
@@ -422,10 +426,41 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
 
             // Send an echo request to all connected nodes
             let echo_request = RadioMessage::request_echo_with(self.own_node_id);
+
+            // Increment dirty counter for all nodes in connection matrix
+            log::trace!("[{}] Sending echo request, updating dirty counters for all nodes", self.own_node_id);
+            for sender_index in 0..self.connected_nodes_count {
+                for receiver_index in 0..self.connected_nodes_count {
+                    // Skip the diagonal (sender to itself)
+                    if sender_index == receiver_index {
+                        continue;
+                    }
+                    let value = self.connection_matrix[sender_index][receiver_index];
+
+                    // Skip if connection is already zero (no point in aging non-existent connections)
+                    if value == 0 {
+                        continue;
+                    }
+
+                    // get the upper 2 bits of the value as a small counter
+                    let mut counter = (value & DIRTY_MASK) >> DIRTY_SHIFT;
+                    counter = counter.saturating_add(1);
+                    // If counter exceeds MAX_DIRTY_COUNT, zero the connection matrix cell
+                    if counter > MAX_DIRTY_COUNT {
+                        self.connection_matrix[sender_index][receiver_index] = 0;
+                    } else {
+                        // preserve existing link quality bits, update only the dirty counter
+                        // The qualities will be updated when we receive echo responses and echo results
+                        self.connection_matrix[sender_index][receiver_index] = (counter << DIRTY_SHIFT) | (value & QUALITY_MASK);
+                    }
+                }
+            }
+
             self.next_echo_request_time = Instant::now() + Duration::from_secs(echo_request_interval as u64);
             return RelayResult::SendMessage(echo_request);
         }
 
+        //if we are in echo gathering phase, check if timeout passed and send echo results
         if Instant::now() >= self.echo_gathering_end_time.unwrap_or(Instant::MAX) {
             log::debug!("[{}] Echo gathering timeout passed, sending echo results", self.own_node_id);
             // If echo gathering timeout has passed, reset the echo gathering end time
@@ -589,32 +624,13 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             return RelayResult::None;
         };
 
-        // If message is an echo_request increment dirty counter in connection matrix
+        // If message is an echo_request, send a reply echo message
         if message.message_type() == MessageType::RequestEcho as u8 {
             log::trace!(
-                "[{}] Received echo request from node {}, updating dirty counters",
+                "[{}] Received echo request from node {}, preparing reply",
                 self.own_node_id,
                 message.sender_node_id()
             );
-            //set the dirty flag on connection matrix or zero the connection matrix item if it is already set
-            for i in 0..CONNECTION_MATRIX_SIZE {
-                // Skip the diagonal (sender to itself)
-                if i == sender_index {
-                    continue;
-                }
-                let value = self.connection_matrix[sender_index][i];
-                // get the upper 2 bits of the value as a small counter
-                let mut counter = (value & DIRTY_MASK) >> DIRTY_SHIFT;
-                counter = counter.saturating_add(1);
-                // If counter exceeds 3, zero the connection matrix cell
-                if counter > MAX_DIRTY_COUNT {
-                    self.connection_matrix[sender_index][i] = 0;
-                } else {
-                    // preserve existing link quality bits, update only the dirty counter
-                    //The qualities will be updated when we receive echo responses and echo results
-                    self.connection_matrix[sender_index][i] = (counter << DIRTY_SHIFT) | (value & QUALITY_MASK);
-                }
-            }
 
             //send a reply echo message
             let result_opt = self.add_echo_response(message.sender_node_id(), last_link_quality);
@@ -847,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_request_increments_dirty_and_sends_reply() {
+    fn echo_request_receives_and_queues_reply() {
         const N: usize = 8;
         const W: usize = 4;
         let mut rm = new_manager::<N, W>();
@@ -865,8 +881,8 @@ mod tests {
 
         // Sender should be inserted at index 1 (index 0 is own node)
         let sender_index = 1usize;
-        // Dirty bit should be incremented and quality preserved (zero initially)
-        assert_eq!(rm.connection_matrix[sender_index][0] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        // Dirty counter should NOT be incremented when receiving echo request
+        assert_eq!(rm.connection_matrix[sender_index][0] & DIRTY_MASK, 0);
         assert_eq!(rm.connection_matrix[sender_index][0] & QUALITY_MASK, 0);
 
         // An echo response should be queued in the wait pool
@@ -876,6 +892,70 @@ mod tests {
             .flatten()
             .any(|item| item.target_node_id == sender_id && item.link_quality == last_lq);
         assert!(has_pooled_echo, "expected an echo response to be queued");
+    }
+
+    #[test]
+    fn sending_echo_request_increments_dirty_counters() {
+        const N: usize = 8;
+        const W: usize = 4;
+        let mut rm = new_manager::<N, W>();
+
+        // Manually register some nodes with quality values
+        let node2_id = 2u32;
+        let node3_id = 3u32;
+        rm.connection_matrix_nodes[1] = node2_id;
+        rm.connection_matrix_nodes[2] = node3_id;
+        rm.connected_nodes_count = 3;
+
+        // Set some quality values without dirty counters, including from own_node (index 0)
+        rm.connection_matrix[0][1] = 10; // own_node -> node2
+        rm.connection_matrix[0][2] = 15; // own_node -> node3
+        rm.connection_matrix[1][0] = 20; // node2 -> own_node
+        rm.connection_matrix[1][2] = 30; // node2 -> node3
+        rm.connection_matrix[2][0] = 40; // node3 -> own_node
+        rm.connection_matrix[2][1] = 50; // node3 -> node2
+
+        // Verify initial state - no dirty counters
+        assert_eq!(rm.connection_matrix[0][1] & DIRTY_MASK, 0);
+        assert_eq!(rm.connection_matrix[0][2] & DIRTY_MASK, 0);
+        assert_eq!(rm.connection_matrix[1][0] & DIRTY_MASK, 0);
+        assert_eq!(rm.connection_matrix[1][2] & DIRTY_MASK, 0);
+        assert_eq!(rm.connection_matrix[2][0] & DIRTY_MASK, 0);
+        assert_eq!(rm.connection_matrix[2][1] & DIRTY_MASK, 0);
+
+        // Force the next echo request time to trigger immediately
+        rm.next_echo_request_time = Instant::now();
+
+        // Call process_timed_tasks which should send echo request and increment dirty counters
+        let result = rm.process_timed_tasks();
+
+        // Should return SendMessage with RequestEcho
+        match result {
+            RelayResult::SendMessage(msg) => {
+                assert_eq!(msg.message_type(), MessageType::RequestEcho as u8);
+            }
+            other => panic!("Expected SendMessage, got: {:?}", core::mem::discriminant(&other)),
+        }
+
+        // Now verify dirty counters are incremented and quality values preserved for ALL connections
+        // Including connections from own_node (index 0)
+        assert_eq!(rm.connection_matrix[0][1] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[0][1] & QUALITY_MASK, 10);
+
+        assert_eq!(rm.connection_matrix[0][2] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[0][2] & QUALITY_MASK, 15);
+
+        assert_eq!(rm.connection_matrix[1][0] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[1][0] & QUALITY_MASK, 20);
+
+        assert_eq!(rm.connection_matrix[1][2] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[1][2] & QUALITY_MASK, 30);
+
+        assert_eq!(rm.connection_matrix[2][0] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[2][0] & QUALITY_MASK, 40);
+
+        assert_eq!(rm.connection_matrix[2][1] & DIRTY_MASK, 1 << DIRTY_SHIFT);
+        assert_eq!(rm.connection_matrix[2][1] & QUALITY_MASK, 50);
     }
 
     #[test]
