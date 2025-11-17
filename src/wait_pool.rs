@@ -323,9 +323,10 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                     }
 
                     let score = item.calculate_score(own_connections, &self.scoring_matrix);
+                    log::info!("Calculated score: {}", score);
                     if (score < self.scoring_matrix.relay_score_limit as u32 && item.requestor_index.is_none()) || score == 0 {
                         log!(
-                            log::Level::Trace,
+                            log::Level::Info,
                             "[{}] Message removed from wait pool: sequence: {}",
                             self.own_node_id,
                             message.sequence().unwrap_or(0)
@@ -427,7 +428,17 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
         let score = new_item.calculate_score(own_connections, &self.scoring_matrix);
 
-        if (score < self.scoring_matrix.relay_score_limit as u32 && requestor_index.is_none()) || score == 0 {}
+        if (score < self.scoring_matrix.relay_score_limit as u32 && requestor_index.is_none()) || score == 0 {
+            //do not add low score items
+            log!(
+                log::Level::Trace,
+                "[{}] Message not added to wait pool due to low score: sequence: {}, score: {}",
+                self.own_node_id,
+                new_item.message.sequence().unwrap_or(0),
+                score
+            );
+            return;
+        }
 
         let position = new_item.calculate_own_position(&new_item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
 

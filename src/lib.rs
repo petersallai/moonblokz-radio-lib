@@ -482,7 +482,7 @@ static RX_PACKET_QUEUE: RxPacketQueue = Channel::new();
 ///
 /// Small queue for signaling receive state changes to the TX scheduler,
 /// preventing transmission during active reception.
-const RX_STATE_QUEUE_SIZE: usize = 2;
+const RX_STATE_QUEUE_SIZE: usize = 20;
 
 /// Type alias for the RX state channel
 type RxStateQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;

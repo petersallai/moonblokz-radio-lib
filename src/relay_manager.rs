@@ -495,6 +495,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             return RelayResult::SendMessage(message);
         }
 
+        //process echo responses wait pool
         for i in 0..self.echo_responses_wait_pool.len() {
             if let Some(item) = &self.echo_responses_wait_pool[i] {
                 if item.send_time <= Instant::now() {
@@ -698,6 +699,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
             || message.message_type() == MessageType::AddTransaction as u8
             || message.message_type() == MessageType::Support as u8
             || message.message_type() == MessageType::RequestFullBlock as u8
+            || message.message_type() == MessageType::RequestBlockPart as u8
             || message.message_type() == MessageType::RequestNewMempoolItem as u8)
             && self.wait_pool.contains_message_or_reply(message)
         {
