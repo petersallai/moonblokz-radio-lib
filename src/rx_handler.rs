@@ -235,8 +235,11 @@ pub(crate) async fn rx_handler_task(
         )
         .await
         {
-            Either4::First(received_packet) => {
+            Either4::First(mut received_packet) => {
                 let rx_packet = received_packet.packet;
+                if received_packet.link_quality == 0 {
+                    received_packet.link_quality = 1; //we received the packet, so at least 1
+                }
                 if rx_packet.total_packet_count() == 1 {
                     log::trace!(
                         "[{}] Received single-packet message: type: {}, sender: {}, length: {}",
