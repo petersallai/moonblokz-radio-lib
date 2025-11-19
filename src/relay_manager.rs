@@ -475,12 +475,14 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 let receive_link_quality = receive_link_matrix_item & QUALITY_MASK;
                 if (send_link_matrix_item & DIRTY_MASK == 0 || receive_link_matrix_item & DIRTY_MASK == 0)
                     && (send_link_quality != 0 || receive_link_quality != 0)
-                    && echo_result
+                {
+                    if echo_result
                         .add_echo_result_item(neighbor_node, send_link_quality, receive_link_quality)
                         .is_err()
-                {
-                    log::warn!("[{}] Echo result message full, cannot add more items", self.own_node_id);
-                    break;
+                    {
+                        log::warn!("[{}] Echo result message full, cannot add more items", self.own_node_id);
+                        break;
+                    }
                 }
             }
             return RelayResult::SendMessage(echo_result);
@@ -540,8 +542,16 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
         };
 
         // Update the wait pool too
-        self.wait_pool
-            .update_with_received_packet(packet, &self.connection_matrix, &self.connection_matrix[0], &sender_connections);
+        if let Some(sequence) = packet.sequence() {
+            self.wait_pool.update_message(
+                packet.message_type(),
+                sequence,
+                packet.payload_checksum(),
+                &self.connection_matrix,
+                &self.connection_matrix[0],
+                &sender_connections,
+            );
+        }
     }
 
     /// Processes a received message and updates network state
@@ -659,7 +669,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     self.connection_matrix[sender_index][0] = last_link_quality;
                     // Record echo-reported link from sender -> target (row: sender, col: target)
                     // also reset dirty counter to 0
-                    self.connection_matrix[sender_index][target_index] = link_quality;
+                    self.connection_matrix[target_index][sender_index] = link_quality;
                 }
             }
         }
@@ -708,12 +718,16 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 self.own_node_id,
                 message.sender_node_id()
             );
-            self.wait_pool.update_message(
-                message,
-                &self.connection_matrix,
-                &self.connection_matrix[0],
-                &self.connection_matrix[sender_index],
-            );
+            if let Some(sequence) = message.sequence() {
+                self.wait_pool.update_message(
+                    message.message_type(),
+                    sequence,
+                    message.payload_checksum(),
+                    &self.connection_matrix,
+                    &self.connection_matrix[0],
+                    &self.connection_matrix[sender_index],
+                );
+            }
             return RelayResult::AlreadyHaveMessage;
         }
 
@@ -758,7 +772,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                 );
             }
             MessageProcessingResult::RequestedBlockFound(message) => {
-                log::debug!(
+                log::trace!(
                     "[{}] Requested block found, adding relaying to wait pool for relay: sequence {}",
                     self.own_node_id,
                     message.sequence().unwrap_or(0)

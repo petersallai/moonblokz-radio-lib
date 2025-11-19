@@ -310,47 +310,55 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
     /// `true` if the message was found and updated, `false` if not found
     pub(crate) fn update_message(
         &mut self,
-        message: &RadioMessage,
+        message_type: u8,
+        sequence: u32,
+        payload_checksum: Option<u32>,
         connection_matrix: &ConnectionMatrix,
         own_connections: &ConnectionMatrixRow,
         sender_connections: &ConnectionMatrixRow,
     ) -> bool {
         for item_opt in self.items.iter_mut() {
             if let Some(item) = item_opt {
-                if item.message == *message {
-                    for (message_conn, sender_conn) in item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE) {
-                        *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
-                    }
+                if let Some(item_sequence) = item.message.sequence() {
+                    if item_sequence == sequence && item.message.message_type() == message_type {
+                        if let (Some(item_payload_checksum), Some(payload_checksum)) = (item.message.payload_checksum(), payload_checksum) {
+                            if item_payload_checksum != payload_checksum {
+                                continue;
+                            }
+                        }
+                        for (message_conn, sender_conn) in item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE) {
+                            *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
+                        }
 
-                    let score = item.calculate_score(own_connections, &self.scoring_matrix);
-                    log::info!("Calculated score: {}", score);
-                    if (score < self.scoring_matrix.relay_score_limit as u32 && item.requestor_index.is_none()) || score == 0 {
+                        let score = item.calculate_score(own_connections, &self.scoring_matrix);
+                        if (score < self.scoring_matrix.relay_score_limit as u32 && item.requestor_index.is_none()) || score == 0 {
+                            log!(
+                                log::Level::Trace,
+                                "[{}] Message removed from wait pool: sequence: {}",
+                                self.own_node_id,
+                                sequence
+                            );
+                            *item_opt = None;
+                            return true;
+                        }
+                        let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
+
+                        // Recalculate activation time with new position and jitter as half the range
+                        item.activation_time = Instant::now()
+                            + Duration::from_secs(position * self.relay_position_delay)
+                            + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
+
                         log!(
-                            log::Level::Info,
-                            "[{}] Message removed from wait pool: sequence: {}",
+                            log::Level::Trace,
+                            "[{}] updating waitpool item: sequence: {}, position: {}, activation_time: {} s",
                             self.own_node_id,
-                            message.sequence().unwrap_or(0)
+                            sequence,
+                            position,
+                            item.activation_time.duration_since(Instant::now()).as_secs()
                         );
-                        *item_opt = None;
+
                         return true;
                     }
-                    let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
-
-                    // Recalculate activation time with new position and jitter as half the range
-                    item.activation_time = Instant::now()
-                        + Duration::from_secs(position * self.relay_position_delay)
-                        + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
-
-                    log!(
-                        log::Level::Trace,
-                        "[{}] updating waitpool item: sequence: {}, position: {}, activation_time: {} s",
-                        self.own_node_id,
-                        message.sequence().unwrap_or(0),
-                        position,
-                        item.activation_time.duration_since(Instant::now()).as_secs()
-                    );
-
-                    return true;
                 }
             }
         }
@@ -403,11 +411,19 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
         sender_connections: &ConnectionMatrixRow,
         requestor_index: Option<usize>,
     ) {
-        //first update existing item if present
-        if self.update_message(&message, connection_matrix, own_connections, sender_connections) {
-            return;
+        if let Some(sequence) = message.sequence() {
+            //first update existing item if present
+            if self.update_message(
+                message.message_type(),
+                sequence,
+                message.payload_checksum(),
+                connection_matrix,
+                own_connections,
+                sender_connections,
+            ) {
+                return;
+            }
         }
-
         //create a new item
         let mut new_item = WaitPoolItem {
             message,
@@ -437,6 +453,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
                 new_item.message.sequence().unwrap_or(0),
                 score
             );
+
             return;
         }
 
@@ -480,87 +497,6 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
             );
 
             self.items[min_index] = Some(new_item);
-        }
-    }
-
-    /// Updates items that requested by a node based on a received packet
-    /// This is neccesary, because if a node requests missing packets from a message,
-    /// the full message won't be transmitted, only the missing packets. This
-    /// function handles this case, by updating the waitpool items with received packets (not messages).
-    ///
-    /// When a packet arrives, it may match messages already in the wait pool
-    /// (e.g., another packet from the same multi-packet message). This method
-    /// updates the network knowledge for matching messages.
-    ///
-    /// # Matching Criteria
-    ///
-    /// A packet matches a wait pool item if:
-    /// 1. The item has a requestor (is a targeted relay)
-    /// 2. Message type matches
-    /// 3. Sequence number matches (if both have sequence numbers)
-    /// 4. Payload checksum matches (if both have checksums)
-    ///
-    /// # Update Behavior
-    ///
-    /// Same as `update_message`: updates network topology, recalculates score,
-    /// removes if score too low, recalculates activation time.
-    ///
-    /// # Arguments
-    ///
-    /// * `packet` - The received packet
-    /// * `connection_matrix` - Full network topology
-    /// * `own_connections` - This node's connection quality to all nodes
-    /// * `sender_connections` - Packet sender's connection quality to all nodes
-    pub(crate) fn update_with_received_packet(
-        &mut self,
-        packet: &RadioPacket,
-        connection_matrix: &ConnectionMatrix,
-        own_connections: &ConnectionMatrixRow,
-        sender_connections: &ConnectionMatrixRow,
-    ) {
-        if let (Some(packet_sequence), Some(packet_payload_checksum)) = (packet.sequence(), packet.payload_checksum()) {
-            for item_opt in self.items.iter_mut() {
-                if let Some(item) = item_opt {
-                    if item.requestor_index.is_some() && item.message.message_type() == packet.message_type() {
-                        if let (Some(message_sequence), Some(message_payload_checksum)) = (item.message.sequence(), item.message.payload_checksum()) {
-                            if message_sequence == packet_sequence && message_payload_checksum == packet_payload_checksum {
-                                for (message_conn, sender_conn) in
-                                    item.message_connections.iter_mut().zip(sender_connections.iter()).take(CONNECTION_MATRIX_SIZE)
-                                {
-                                    *message_conn = max(*message_conn, sender_conn & QUALITY_MASK);
-                                }
-
-                                if item.calculate_score(own_connections, &self.scoring_matrix) < self.scoring_matrix.relay_score_limit as u32 {
-                                    log!(
-                                        log::Level::Trace,
-                                        "[{}] Message removed from wait pool: sequence: {}",
-                                        self.own_node_id,
-                                        item.message.sequence().unwrap_or(0)
-                                    );
-                                    *item_opt = None;
-                                    return;
-                                }
-                                let position = item.calculate_own_position(&item.message_connections, own_connections, connection_matrix, &self.scoring_matrix);
-
-                                item.activation_time = Instant::now()
-                                    + Duration::from_secs(position * self.relay_position_delay)
-                                    + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
-
-                                log!(
-                                    log::Level::Trace,
-                                    "[{}] updated item in waitpool: sequence: {}, position: {}, activation_time: {} s",
-                                    self.own_node_id,
-                                    item.message.sequence().unwrap_or(0),
-                                    position,
-                                    item.activation_time.duration_since(Instant::now()).as_secs()
-                                );
-
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
