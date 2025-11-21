@@ -70,8 +70,6 @@ The library runs three independent async tasks connected via bounded queues:
 
 ## Algorithm Details
 
-## Algorithm Details
-
 ### Network Topology
 
 Nodes communicate using only broadcast radio signals. The majority of nodes have fixed positions and operate continuously. Some nodes may be mobile, but they are not the majority. The network is ad-hoc with no central authority to create structured partitions.
