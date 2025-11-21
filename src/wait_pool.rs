@@ -101,9 +101,9 @@ pub(crate) struct WaitPoolItem<const CONNECTION_MATRIX_SIZE: usize> {
 }
 
 #[allow(dead_code)]
-const _ASSERT_CONNECTION_MATRIX_SQUARE_FITS_U32: () = assert!(
-    crate::CONNECTION_MATRIX_SIZE * 255 <= u32::MAX as usize,
-    "CONNECTION_MATRIX_SIZE*MAX score size must fit in u32"
+const _ASSERT_CONNECTION_MATRIX_SCORE_FITS_U32: () = assert!(
+    crate::CONNECTION_MATRIX_SIZE * 15 <= u32::MAX as usize,
+    "CONNECTION_MATRIX_SIZE * max_score (15) must fit in u32"
 );
 
 impl<const CONNECTION_MATRIX_SIZE: usize> WaitPoolItem<CONNECTION_MATRIX_SIZE> {
@@ -461,7 +461,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize> WaitPool<
 
         new_item.activation_time = Instant::now()
             + Duration::from_secs(position * self.relay_position_delay)
-            + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000));
+            + Duration::from_millis(self.rng.next_u64() % (self.relay_position_delay * 1000 / 2));
 
         //find an empty spot in the waitpool
 

@@ -204,7 +204,8 @@ const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15;
 ///
 /// Calculated via ceiling division to ensure we can accommodate RADIO_MAX_MESSAGE_SIZE.
 /// **Compatibility critical**: Derived from RADIO_PACKET_SIZE and RADIO_MAX_MESSAGE_SIZE.
-pub const RADIO_MAX_PACKET_COUNT: usize = RADIO_MAX_MESSAGE_SIZE.div_ceil(RADIO_PACKET_SIZE);
+pub const RADIO_MAX_PACKET_COUNT: usize =
+    (RADIO_MAX_MESSAGE_SIZE - RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE).div_ceil(RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE);
 
 /// Compile-time assertion that packet count fits in a u8
 const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");

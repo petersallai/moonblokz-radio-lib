@@ -187,7 +187,7 @@ impl LastReceivedMessages {
 /// * `process_result_queue_receiver` - Receives processing results from application
 /// * `echo_request_minimal_interval` - Minimum time between echo requests (minutes)
 /// * `echo_messages_target_interval` - Target number of messages between echoes
-/// * `echo_gathering_timeout` - Time to collect echo responses (seconds)
+/// * `echo_gathering_timeout` - Time to collect echo responses (minutes)
 /// * `relay_position_delay` - Base delay for relay position calculation (seconds)
 /// * `scoring_matrix` - Configuration for relay scoring decisions
 /// * `retry_interval_for_missing_packets` - Retry interval for incomplete messages (seconds)

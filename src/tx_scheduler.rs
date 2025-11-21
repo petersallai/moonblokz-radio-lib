@@ -132,7 +132,7 @@ async fn send_message_to_radio(
 /// # Parameters
 /// * `outgoing_message_queue_receiver` - Receiver for incoming messages to transmit
 /// * `radio_device_sender` - Sender for forwarding packets to the radio device
-/// * `delay_between_packets` - Minimum delay in seconds between individual packets
+/// * `delay_between_packets` - Minimum delay in milliseconds between individual packets
 /// * `delay_between_messages` - Minimum delay in seconds between message transmissions
 /// * `tx_maximum_random_delay` - Maximum jitter in milliseconds added to transmission timing
 /// * `own_node_id` - This node's unique identifier for logging
