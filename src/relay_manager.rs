@@ -667,7 +667,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     // Record last link quality from sender to self (column 0)
                     // also reset dirty counter to 0
                     self.connection_matrix[sender_index][0] = last_link_quality;
-                    // Record echo-reported link from sender -> target (row: sender, col: target)
+                    // Record echo-reported link from target -> sender (row: target, col: sender)
                     // also reset dirty counter to 0
                     self.connection_matrix[target_index][sender_index] = link_quality;
                 }
@@ -988,12 +988,14 @@ mod tests {
         rm.connection_matrix[2][2] = 63;
         rm.connected_nodes_count = 3;
 
-        // Echo from sender -> target with link quality
+        // Echo from sender reporting link quality to target
+        // Matrix semantics: connection_matrix[target][sender] = target -> sender link quality
         let link_q = 15u8;
         let echo = RadioMessage::echo_with(sender_id, target_id, link_q);
         let _ = rm.process_received_message(&echo, link_q);
 
-        assert_eq!(rm.connection_matrix[1][2] & QUALITY_MASK, link_q);
+        // Check target -> sender direction (row: target=2, col: sender=1)
+        assert_eq!(rm.connection_matrix[2][1] & QUALITY_MASK, link_q);
     }
 
     #[test]

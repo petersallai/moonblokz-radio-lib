@@ -40,7 +40,7 @@ use rand_core::{RngCore, SeedableRng};
 use rand_wyrand::WyRand;
 
 use crate::relay_manager::{ConnectionMatrix, ConnectionMatrixRow};
-use crate::{RadioMessage, RadioPacket, ScoringMatrix};
+use crate::{RadioMessage, ScoringMatrix};
 
 use crate::relay_manager::QUALITY_MASK;
 
