@@ -490,38 +490,24 @@ impl RadioDevice {
                         if rx_packet.packet.message_type() == MessageType::AddBlock as u8
                             || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
                         {
-                            log::trace!(
-                                "[{}] Received RX packet: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                            log::debug!(
+                                "[{}] *TM* Packet received: type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
                                 own_node_id,
                                 rx_packet.packet.message_type(),
                                 rx_packet.packet.sequence().unwrap_or(0),
                                 rx_packet.packet.length,
                                 rx_packet.packet.packet_index() + 1,
                                 rx_packet.packet.total_packet_count(),
+                                rx_packet.link_quality
                             );
                         } else {
-                            if rx_packet.packet.message_type() == MessageType::AddBlock as u8
-                                || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
-                            {
-                                log::debug!(
-                                    "[{}] Packet received: type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
-                                    own_node_id,
-                                    rx_packet.packet.message_type(),
-                                    rx_packet.packet.sequence().unwrap_or(0),
-                                    rx_packet.packet.length,
-                                    rx_packet.packet.packet_index() + 1,
-                                    rx_packet.packet.total_packet_count(),
-                                    rx_packet.link_quality
-                                );
-                            } else {
-                                log::debug!(
-                                    "[{}] Packet received: type: {}, length: {}, link quality: {}",
-                                    own_node_id,
-                                    rx_packet.packet.message_type(),
-                                    rx_packet.packet.length,
-                                    rx_packet.link_quality
-                                );
-                            }
+                            log::debug!(
+                                "[{}] *TM* Packet received: type: {}, length: {}, link quality: {}",
+                                own_node_id,
+                                rx_packet.packet.message_type(),
+                                rx_packet.packet.length,
+                                rx_packet.link_quality
+                            );
                         }
 
                         if rx_sender.try_send(rx_packet).is_err() {
@@ -554,7 +540,7 @@ impl RadioDevice {
                             tx_packet.length
                         );
                     }
-                    // Transmit the packet once: wait for a clear channel, then send and break                    
+                    // Transmit the packet once: wait for a clear channel, then send and break
                     loop {
                         log::trace!("[{}] Starting CAD before transmit", own_node_id);
                         //On my test hardware CAD sometimes never completes, so add a timeout
@@ -568,7 +554,7 @@ impl RadioDevice {
                                     if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8
                                     {
                                         log::debug!(
-                                            "[{}] Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                                            "[{}] *TM* Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
                                             own_node_id,
                                             tx_packet.message_type(),
                                             tx_packet.sequence().unwrap_or(0),
@@ -578,7 +564,7 @@ impl RadioDevice {
                                         );
                                     } else {
                                         log::debug!(
-                                            "[{}] Packet transmitted: type: {}, length: {}",
+                                            "[{}] *TM* Packet transmitted: type: {}, length: {}",
                                             own_node_id,
                                             tx_packet.message_type(),
                                             tx_packet.length
