@@ -604,7 +604,7 @@ impl RadioMessage {
     /// Each entry contains neighbor node ID, send link quality, and receiving link quality.
     ///
     /// # Returns
-    /// * `Some(EchoResultIterator)` - Iterator over echo result items
+    /// * `Some(EchoResultIterator<'_>)` - Iterator over echo result items
     /// * `None` - Message is not EchoResult type or insufficient data
     ///
     /// # Example
@@ -616,7 +616,7 @@ impl RadioMessage {
     ///     }
     /// }
     /// ```
-    pub(crate) fn get_echo_result_data_iterator(&self) -> Option<EchoResultIterator> {
+    pub(crate) fn get_echo_result_data_iterator(&self) -> Option<EchoResultIterator<'_>> {
         if self.message_type() != MessageType::EchoResult as u8 {
             return None;
         }
@@ -726,7 +726,7 @@ impl RadioMessage {
     /// [13]=count, [14..14+count)=indices`
     ///
     /// # Returns
-    /// * `Some(RequestBlockPartIterator)` - Iterator over packet indices
+    /// * `Some(RequestBlockPartIterator<'_>)` - Iterator over packet indices
     /// * `None` - Message is not RequestBlockPart type or insufficient data
     ///
     /// # Example
@@ -737,7 +737,7 @@ impl RadioMessage {
     ///     }
     /// }
     /// ```
-    pub fn get_request_block_part_iterator(&self) -> Option<RequestBlockPartIterator> {
+    pub fn get_request_block_part_iterator(&self) -> Option<RequestBlockPartIterator<'_>> {
         if self.message_type() != MessageType::RequestBlockPart as u8 {
             return None;
         }
@@ -1011,7 +1011,7 @@ impl RadioMessage {
     /// Each entry contains anchor sequence and transaction payload checksum.
     ///
     /// # Returns
-    /// * `Some(MempoolIterator)` - Iterator over mempool items
+    /// * `Some(MempoolIterator<'_>)` - Iterator over mempool items
     /// * `None` - Message is not RequestNewMempoolItem type or insufficient data
     ///
     /// # Example
@@ -1023,7 +1023,7 @@ impl RadioMessage {
     ///     }
     /// }
     /// ```
-    pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator> {
+    pub(crate) fn get_mempool_data_iterator(&self) -> Option<MempoolIterator<'_>> {
         if self.message_type() != MessageType::RequestNewMempoolItem as u8 {
             return None;
         }
