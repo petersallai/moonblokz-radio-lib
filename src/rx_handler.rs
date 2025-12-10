@@ -753,6 +753,15 @@ fn process_message(
         || message.message_type() == MessageType::Support as u8)
         && should_process
     {
+        log::debug!(
+            "[{}] *TM4* Routing message to incoming queue: sender: {}, type: {}, length: {}, sequence: {}",
+            own_node_id,
+            message.sender_node_id(),
+            message.message_type(),
+            message.length(),
+            message.sequence().unwrap_or(0)
+        );
+
         let result = incoming_message_queue_sender.try_send(IncomingMessageItem::NewMessage(message));
 
         if let Err(result_error) = result {

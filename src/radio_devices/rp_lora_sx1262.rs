@@ -491,8 +491,9 @@ impl RadioDevice {
                             || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
                         {
                             log::debug!(
-                                "[{}] *TM* Packet received: type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
+                                "[{}] *TM2* Packet received: sender: {}, type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
                                 own_node_id,
+                                rx_packet.packet.sender_node_id(),
                                 rx_packet.packet.message_type(),
                                 rx_packet.packet.sequence().unwrap_or(0),
                                 rx_packet.packet.length,
@@ -502,8 +503,9 @@ impl RadioDevice {
                             );
                         } else {
                             log::debug!(
-                                "[{}] *TM* Packet received: type: {}, length: {}, link quality: {}",
+                                "[{}] *TM2* Packet received: sender: {}, type: {}, length: {}, link quality: {}",
                                 own_node_id,
+                                rx_packet.packet.sender_node_id(),
                                 rx_packet.packet.message_type(),
                                 rx_packet.packet.length,
                                 rx_packet.link_quality
@@ -554,7 +556,7 @@ impl RadioDevice {
                                     if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8
                                     {
                                         log::debug!(
-                                            "[{}] *TM* Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
+                                            "[{}] *TM1* Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
                                             own_node_id,
                                             tx_packet.message_type(),
                                             tx_packet.sequence().unwrap_or(0),
@@ -564,7 +566,7 @@ impl RadioDevice {
                                         );
                                     } else {
                                         log::debug!(
-                                            "[{}] *TM* Packet transmitted: type: {}, length: {}",
+                                            "[{}] *TM1* Packet transmitted: type: {}, length: {}",
                                             own_node_id,
                                             tx_packet.message_type(),
                                             tx_packet.length
