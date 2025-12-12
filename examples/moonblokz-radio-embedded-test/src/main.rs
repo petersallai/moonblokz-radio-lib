@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use lora_phy::sx126x::TcxoCtrlVoltage;
 use rp_usb_console;
 
@@ -37,15 +37,14 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
-#[embassy_executor::task]
-async fn command_task(command_receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>) {
-    loop {
-        let msg = command_receiver.receive().await;
-        if let Ok(command_str) = core::str::from_utf8(&msg) {
-            log::info!("Command: arrived {}", command_str);
-        } else {
-            log::error!("Received invalid UTF-8 command");
-        }
+/// Parse a /M_{sequence}_ command and extract the sequence number
+fn parse_measurement_command(command: &str) -> Option<u32> {
+    let trimmed = command.trim();
+    if trimmed.starts_with("/M_") && trimmed.ends_with("_") {
+        let inner = &trimmed[3..trimmed.len() - 1];
+        inner.parse::<u32>().ok()
+    } else {
+        None
     }
 }
 
@@ -56,7 +55,7 @@ async fn main(spawner: Spawner) {
     //  spawner.spawn(logger_task(driver)).unwrap();
     rp_usb_console::start(spawner, log::LevelFilter::Trace, p.USB, Some(COMMAND_CHANNEL.sender()));
 
-    spawner.spawn(command_task(COMMAND_CHANNEL.receiver())).unwrap();
+    let command_receiver = COMMAND_CHANNEL.receiver();
 
     //waiting a bit to let the terminal connect to the device
     let mut debug_indicator = Output::new(p.PIN_25, Level::Low);
@@ -171,8 +170,14 @@ async fn main(spawner: Spawner) {
     let mut next_send_time = embassy_time::Instant::now() + Duration::from_secs(5);
 
     loop {
-        match select(radio_communication_manager.receive_message(), Timer::at(next_send_time)).await {
-            Either::First(message) => {
+        match select3(
+            radio_communication_manager.receive_message(),
+            Timer::at(next_send_time),
+            command_receiver.receive(),
+        )
+        .await
+        {
+            Either3::First(message) => {
                 if let Ok(IncomingMessageItem::NewMessage(msg)) = message {
                     if msg.message_type() == moonblokz_radio_lib::MessageType::AddBlock as u8 {
                         if let Some(sequence) = msg.sequence() {
@@ -232,7 +237,7 @@ async fn main(spawner: Spawner) {
                     }
                 }
             }
-            Either::Second(_) => {
+            Either3::Second(_) => {
                 if Instant::now() >= next_send_time {
                     let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
@@ -256,6 +261,34 @@ async fn main(spawner: Spawner) {
                     sequence_number += 1;
 
                     next_send_time += Duration::from_secs(SEND_MESSAGE_INTERVAL_SECS);
+                }
+            }
+            Either3::Third(command_msg) => {
+                if let Ok(command_str) = core::str::from_utf8(&command_msg) {
+                    if let Some(seq) = parse_measurement_command(command_str) {
+                        log::debug!("[{}] *TM3* Start measurement: sequence: {}", own_node_id, seq);
+
+                        // Create payload with repeating bytes of the sequence number (use low byte)
+                        let seq_byte = (seq & 0xFF) as u8;
+                        let payload: [u8; TEST_BLOCK_SIZE] = [seq_byte; TEST_BLOCK_SIZE];
+
+                        let message = RadioMessage::add_block_with(own_node_id, seq, &payload);
+                        if radio_communication_manager.send_message(message).is_err() {
+                            log::error!("Failed to send measurement message with sequence number {}", seq);
+                        }
+
+                        // Track the sequence we just sent
+                        if arrived_sequences.len() == arrived_sequences.capacity() {
+                            arrived_sequences.remove(0);
+                        }
+                        arrived_sequences.push(seq).unwrap_or_else(|_| {
+                            log::error!("Arrived sequences buffer full, cannot track more sequences.");
+                        });
+                    } else {
+                        log::info!("Command: arrived {}", command_str);
+                    }
+                } else {
+                    log::error!("Received invalid UTF-8 command");
                 }
             }
         }
