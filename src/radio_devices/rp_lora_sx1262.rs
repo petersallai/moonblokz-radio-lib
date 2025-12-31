@@ -384,7 +384,7 @@ impl RadioDevice {
             chip: Sx1262,
             tcxo_ctrl: tcxo_ctrl,
             use_dcdc: true,
-            rx_boost: false,
+            rx_boost: true,
         };
 
         log::trace!("[{}] Initializing interface variant", own_node_id);

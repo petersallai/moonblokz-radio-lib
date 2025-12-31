@@ -259,15 +259,16 @@ Two persistent issues encountered with RP2040 + SX1262:
 1. **CAD Occasionally Sticks**: 
    - `LoRa.cad()` sometimes never returns, locking device in waiting state
    - Unclear if hardware quirk or driver issue
-   - **Solution**: Added timeout mechanism - abort CAD if doesn't complete within fixed duration
-   - Same timeout logic planned for packet transmissions
+   - **Solution**: Added timeout mechanism (`CAD_TIMEOUT_MS = 1000`) - abort CAD if doesn't complete within fixed duration
+   - See `rp_lora_sx1262.rs` run() method for timeout implementation using `select()`
 
 2. **Missing CRC Validation**:
    - Hardware CRC support theoretically available but unreliable in practice
    - Kept receiving corrupted packets with hardware CRC enabled
-   - **Solution**: Implemented software-based CRC (16 extra bits per packet)
-   - Controlled via Cargo feature flag `soft-packet-crc`
+   - **Solution**: Implemented software-based CRC-16-CCITT (2 extra bytes per packet)
+   - Controlled via Cargo feature flag `soft-packet-crc` (auto-enabled by `radio-device-rp-lora-sx1262`)
    - Trade-off: slightly reduced max payload size, but far more dependable data link
+   - CRC appended on TX, verified on RX with `checksum16()` function
 
 ### State Machine Flow
 
@@ -384,11 +385,13 @@ Radio device selected by mutually-exclusive features - see compile-time assertio
 ## Testing
 
 ```bash
-# Run tests (requires std feature)
-cargo test --features std,radio-device-simulator
+# Run tests (requires std feature and a radio device)
+cargo test --features std,radio-device-echo,memory-config-large
+# Or with simulator:
+cargo test --features std,radio-device-simulator,memory-config-large
 
 # Tests live in #[cfg(all(test, feature = "std"))] blocks
-# See relay_manager.rs lines 876+ for examples
+# See relay_manager.rs lines 865+ for examples
 ```
 
 ## Build Commands
@@ -397,11 +400,12 @@ cargo test --features std,radio-device-simulator
 # Development (simulator)
 cargo build --features std,radio-device-simulator,memory-config-large
 
-# Embedded (RP2040 + LoRa)
+# Embedded (RP2040 + LoRa) - from examples/moonblokz-radio-embedded-test directory
+cd examples/moonblokz-radio-embedded-test
 cargo build --target thumbv6m-none-eabi --features radio-device-rp-lora-sx1262,memory-config-medium
 
-# Examples use --example flag
-cargo run --example moonblokz-radio-std-test --features std,radio-device-simulator
+# Run std example from workspace root
+cargo run --example moonblokz-radio-std-test --features std,radio-device-echo,memory-config-large
 ```
 
 ## Common Pitfalls
@@ -409,8 +413,10 @@ cargo run --example moonblokz-radio-std-test --features std,radio-device-simulat
 1. **Matrix Semantics**: `connection_matrix[sender][receiver]` = link quality from sender→receiver
 2. **Linear Search**: O(n) searches acceptable because CONNECTION_MATRIX_SIZE is small (hardware-limited)
 3. **Dirty Counter**: Reset on echo response/result, NOT on echo request
-4. **Relay Position**: Lower scores relay earlier (better coverage)
+4. **Relay Position**: Higher scores relay SOONER (position 0 = best coverage)
 5. **Embassy Time**: All async timing uses `embassy_time::{Duration, Instant, Timer}`
+6. **Feature Exclusivity**: Only ONE radio device and ONE memory config can be enabled (enforced by compile_error! in lib.rs)
+7. **Task Pool Sizes**: `#[embassy_executor::task(pool_size = N)]` differs: embedded=1, std=100 (see radio_device_task)
 
 ## Documentation Style
 
@@ -421,8 +427,12 @@ cargo run --example moonblokz-radio-std-test --features std,radio-device-simulat
 
 ## Key Files to Reference
 
-- `src/lib.rs` - Public API and type definitions
+- `src/lib.rs` - Public API, type definitions, and compile-time feature assertions
 - `src/relay_manager.rs` - Core network logic and matrix management
 - `src/wait_pool.rs` - Scoring algorithm implementation
+- `src/tx_scheduler.rs` - Transmission timing and duty cycle management
+- `src/rx_handler.rs` - Packet reassembly and message reconstruction
 - `src/messages/radio_message.rs` - Message serialization format
+- `src/radio_devices/rp_lora_sx1262.rs` - LoRa hardware abstraction with SX1262
+- `src/radio_devices/simulator.rs` - Multi-node network simulation
 - `README.md` - Algorithm descriptions and network behavior
