@@ -133,7 +133,7 @@ async fn main(spawner: Spawner) {
                 None,
                 900_000_000, // 900 MHz
                 SpreadingFactor::_7,
-                Bandwidth::_250KHz,
+                Bandwidth::_125KHz,
                 CodingRate::_4_5,
                 own_node_id,
             )
