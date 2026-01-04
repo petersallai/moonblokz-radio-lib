@@ -749,7 +749,7 @@ impl RadioDevice {
 
                             if received_crc != calculated_crc {
                                 log::trace!(
-                                    "[{}] CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
+                                    "[{}] *TM5* CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
                                     own_node_id,
                                     received_crc,
                                     calculated_crc

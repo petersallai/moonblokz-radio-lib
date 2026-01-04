@@ -22,7 +22,7 @@ use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
 
 const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
-const SEND_MESSAGE_INTERVAL_SECS: u64 = 60; // Interval between sending messages
+const SEND_MESSAGE_INTERVAL_SECS: u64 = 30; // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
