@@ -185,7 +185,8 @@ async fn main(spawner: Spawner) {
                                 // TODO: Already have message, should we report back?
                             } else {
                                 log::info!(
-                                    "Received AddBlock: sender: {}, sequence: {} length: {}",
+                                    "[{}] *TM6* Received AddBlock message: sender: {}, sequence: {} length: {}",
+                                    own_node_id,
                                     msg.sender_node_id(),
                                     sequence,
                                     msg.length()
@@ -243,7 +244,8 @@ async fn main(spawner: Spawner) {
 
                     let message = RadioMessage::add_block_with(own_node_id, sequence_number, &payload);
                     log::info!(
-                        "Sending AddBlock: sender: {}, sequence: {}, length: {}",
+                        "[{}] *TM7* Sending AddBlock: sender: {}, sequence: {}, length: {}",
+                        own_node_id,
                         message.sender_node_id(),
                         sequence_number,
                         message.length()
