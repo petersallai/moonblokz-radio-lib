@@ -487,9 +487,7 @@ impl RadioDevice {
             match select(self.receive_packet(own_node_id), tx_receiver.receive()).await {
                 Either::First(rx_result) => match rx_result {
                     Ok(rx_packet) => {
-                        if rx_packet.packet.message_type() == MessageType::AddBlock as u8
-                            || rx_packet.packet.message_type() == MessageType::AddTransaction as u8
-                        {
+                        if rx_packet.packet.sequence().is_some() {
                             log::debug!(
                                 "[{}] *TM2* Packet received: sender: {}, type: {}, sequence: {}, length: {}, packet: {}/{}, link quality: {}",
                                 own_node_id,
@@ -553,8 +551,7 @@ impl RadioDevice {
                                 if self.send_packet(&tx_packet, own_node_id).await.is_err() {
                                     log::warn!("[{}] Failed to transmit packet: type: {}", own_node_id, tx_packet.message_type());
                                 } else {
-                                    if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8
-                                    {
+                                    if tx_packet.sequence().is_some() {
                                         log::debug!(
                                             "[{}] *TM1* Packet transmitted: type: {}, sequence: {}, length: {}, packet: {}/{}",
                                             own_node_id,
@@ -749,10 +746,11 @@ impl RadioDevice {
 
                             if received_crc != calculated_crc {
                                 log::trace!(
-                                    "[{}] *TM5* CRC mismatch: received={:04X}, calculated={:04X}. Dropping packet.",
+                                    "[{}] *TM5* CRC mismatch: received={:04X}, calculated={:04X}. link quality: {}. Dropping packet.",
                                     own_node_id,
                                     received_crc,
-                                    calculated_crc
+                                    calculated_crc,
+                                    calculate_link_quality(packet_status.rssi, packet_status.snr)
                                 );
                                 return Err(RadioDeviceError::CRCMismatch);
                             }

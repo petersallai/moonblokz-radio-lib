@@ -20,9 +20,10 @@ use lora_phy::mod_params::{Bandwidth, CodingRate, SpreadingFactor};
 use moonblokz_radio_lib::radio_devices::rp_lora_sx1262::RadioDevice;
 use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
+use portable_atomic::{AtomicU64, Ordering};
 
 const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
-const SEND_MESSAGE_INTERVAL_SECS: u64 = 30; // Interval between sending messages
+static SEND_MESSAGE_INTERVAL_SECS: AtomicU64 = AtomicU64::new(60); // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
@@ -43,6 +44,17 @@ fn parse_measurement_command(command: &str) -> Option<u32> {
     if trimmed.starts_with("/M_") && trimmed.ends_with("_") {
         let inner = &trimmed[3..trimmed.len() - 1];
         inner.parse::<u32>().ok()
+    } else {
+        None
+    }
+}
+
+/// Parse a /S_{interval}_ command and extract the message send interval in seconds
+fn parse_interval_command(command: &str) -> Option<u64> {
+    let trimmed = command.trim();
+    if trimmed.starts_with("/S_") && trimmed.ends_with("_") {
+        let inner = &trimmed[3..trimmed.len() - 1];
+        inner.parse::<u64>().ok()
     } else {
         None
     }
@@ -179,6 +191,9 @@ async fn main(spawner: Spawner) {
         {
             Either3::First(message) => {
                 if let Ok(IncomingMessageItem::NewMessage(msg)) = message {
+                    debug_indicator.set_high();
+                    Timer::after_millis(500).await;
+                    debug_indicator.set_low();
                     if msg.message_type() == moonblokz_radio_lib::MessageType::AddBlock as u8 {
                         if let Some(sequence) = msg.sequence() {
                             if arrived_sequences.contains(&sequence) {
@@ -239,7 +254,11 @@ async fn main(spawner: Spawner) {
                 }
             }
             Either3::Second(_) => {
-                if Instant::now() >= next_send_time {
+                let interval = SEND_MESSAGE_INTERVAL_SECS.load(Ordering::Relaxed);
+                if interval == 0 {
+                    // Automatic sending disabled, reset next_send_time to far future
+                    next_send_time = Instant::now() + Duration::from_secs(u64::MAX / 2);
+                } else if Instant::now() >= next_send_time {
                     let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
                     let message = RadioMessage::add_block_with(own_node_id, sequence_number, &payload);
@@ -262,7 +281,7 @@ async fn main(spawner: Spawner) {
                     });
                     sequence_number += 1;
 
-                    next_send_time += Duration::from_secs(SEND_MESSAGE_INTERVAL_SECS);
+                    next_send_time += Duration::from_secs(interval);
                 }
             }
             Either3::Third(command_msg) => {
@@ -286,6 +305,13 @@ async fn main(spawner: Spawner) {
                         arrived_sequences.push(seq).unwrap_or_else(|_| {
                             log::error!("Arrived sequences buffer full, cannot track more sequences.");
                         });
+                    } else if let Some(interval) = parse_interval_command(command_str) {
+                        let old_interval = SEND_MESSAGE_INTERVAL_SECS.swap(interval, Ordering::Relaxed);
+                        if interval > 0 && old_interval == 0 {
+                            // Resuming automatic sending, schedule next send
+                            next_send_time = Instant::now() + Duration::from_secs(interval);
+                        }
+                        log::info!("[{}] Message send interval set to {} seconds", own_node_id, interval);
                     } else {
                         log::info!("Command: arrived {}", command_str);
                     }
