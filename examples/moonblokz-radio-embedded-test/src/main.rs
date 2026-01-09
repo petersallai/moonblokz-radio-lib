@@ -20,10 +20,9 @@ use lora_phy::mod_params::{Bandwidth, CodingRate, SpreadingFactor};
 use moonblokz_radio_lib::radio_devices::rp_lora_sx1262::RadioDevice;
 use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
-use portable_atomic::{AtomicU64, Ordering};
 
 const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
-static SEND_MESSAGE_INTERVAL_SECS: AtomicU64 = AtomicU64::new(60); // Interval between sending messages
+const DEFAULT_SEND_MESSAGE_INTERVAL_SECS: u64 = 60; // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
@@ -40,28 +39,36 @@ fn panic(_info: &PanicInfo) -> ! {
 
 /// Parse a /M_{sequence}_ command and extract the sequence number
 fn parse_measurement_command(command: &str) -> Option<u32> {
+    log::info!("Parsing measurement command: \"{}\"", command);
     let trimmed = command.trim();
-    if trimmed.starts_with("/M_") && trimmed.ends_with("_") {
-        let inner = &trimmed[3..trimmed.len() - 1];
-        inner.parse::<u32>().ok()
-    } else {
-        None
+    if trimmed.starts_with("/M_") {
+        // Find the second underscore after /M_
+        let after_prefix = &trimmed[3..];
+        if let Some(end_pos) = after_prefix.find('_') {
+            let inner = &after_prefix[..end_pos];
+            return inner.parse::<u32>().ok();
+        }
     }
+    None
 }
 
 /// Parse a /S_{interval}_ command and extract the message send interval in seconds
 fn parse_interval_command(command: &str) -> Option<u64> {
     let trimmed = command.trim();
-    if trimmed.starts_with("/S_") && trimmed.ends_with("_") {
-        let inner = &trimmed[3..trimmed.len() - 1];
-        inner.parse::<u64>().ok()
-    } else {
-        None
+    if trimmed.starts_with("/S_") {
+        // Find the second underscore after /S_
+        let after_prefix = &trimmed[3..];
+        if let Some(end_pos) = after_prefix.find('_') {
+            let inner = &after_prefix[..end_pos];
+            return inner.parse::<u64>().ok();
+        }
     }
+    None
 }
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    let mut send_messagae_interval = DEFAULT_SEND_MESSAGE_INTERVAL_SECS;
     let p = embassy_rp::init(Default::default());
     //let _driver = Driver::new(p.USB, Irqs);
     //  spawner.spawn(logger_task(driver)).unwrap();
@@ -118,7 +125,7 @@ async fn main(spawner: Spawner) {
                 Some(TcxoCtrlVoltage::Ctrl1V7),
                 900_000_000, // 900 MHz
                 SpreadingFactor::_7,
-                Bandwidth::_250KHz,
+                Bandwidth::_125KHz,
                 CodingRate::_4_5,
                 own_node_id,
             )
@@ -180,20 +187,32 @@ async fn main(spawner: Spawner) {
     let mut sequence_number: u32 = own_node_id * 10000;
     let mut arrived_sequences: Vec<u32, 1000> = Vec::new();
     let mut next_send_time = embassy_time::Instant::now() + Duration::from_secs(5);
+    let mut led_off_time: Option<Instant> = None; // Track when to turn LED off
 
     loop {
+        // Check if we need to turn off the LED
+        if let Some(off_time) = led_off_time {
+            if Instant::now() >= off_time {
+                debug_indicator.set_low();
+                led_off_time = None;
+            }
+        }
+
+        // Calculate next LED check time
+        let led_check_time = led_off_time.unwrap_or(Instant::now() + Duration::from_secs(3600));
+
         match select3(
             radio_communication_manager.receive_message(),
-            Timer::at(next_send_time),
+            Timer::at(next_send_time.min(led_check_time)),
             command_receiver.receive(),
         )
         .await
         {
             Either3::First(message) => {
                 if let Ok(IncomingMessageItem::NewMessage(msg)) = message {
+                    // Turn on LED for 500ms without blocking
                     debug_indicator.set_high();
-                    Timer::after_millis(500).await;
-                    debug_indicator.set_low();
+                    led_off_time = Some(Instant::now() + Duration::from_millis(500));
                     if msg.message_type() == moonblokz_radio_lib::MessageType::AddBlock as u8 {
                         if let Some(sequence) = msg.sequence() {
                             if arrived_sequences.contains(&sequence) {
@@ -206,7 +225,8 @@ async fn main(spawner: Spawner) {
                                     sequence,
                                     msg.length()
                                 );
-                                radio_communication_manager.report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::NewBlockAdded(msg));
+                                let _ = radio_communication_manager
+                                    .report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::NewBlockAdded(msg));
                                 if arrived_sequences.len() == arrived_sequences.capacity() {
                                     // Remove the oldest sequence to make space
                                     arrived_sequences.remove(0);
@@ -236,7 +256,7 @@ async fn main(spawner: Spawner) {
                                 for part in request_blockpart_iterator {
                                     block_parts[part.packet_index as usize] = true;
                                 }
-                                response_message.add_packet_list(block_parts);
+                                let _ = response_message.add_packet_list(block_parts);
                                 let _ = radio_communication_manager.report_message_processing_status(
                                     moonblokz_radio_lib::MessageProcessingResult::RequestedBlockPartsFound(response_message, msg.sender_node_id()),
                                 );
@@ -254,8 +274,7 @@ async fn main(spawner: Spawner) {
                 }
             }
             Either3::Second(_) => {
-                let interval = SEND_MESSAGE_INTERVAL_SECS.load(Ordering::Relaxed);
-                if interval == 0 {
+                if send_messagae_interval == 0 {
                     // Automatic sending disabled, reset next_send_time to far future
                     next_send_time = Instant::now() + Duration::from_secs(u64::MAX / 2);
                 } else if Instant::now() >= next_send_time {
@@ -281,13 +300,13 @@ async fn main(spawner: Spawner) {
                     });
                     sequence_number += 1;
 
-                    next_send_time += Duration::from_secs(interval);
+                    next_send_time += Duration::from_secs(send_messagae_interval);
                 }
             }
             Either3::Third(command_msg) => {
                 if let Ok(command_str) = core::str::from_utf8(&command_msg) {
                     if let Some(seq) = parse_measurement_command(command_str) {
-                        log::debug!("[{}] *TM3* Start measurement: sequence: {}", own_node_id, seq);
+                        log::info!("[{}] *TM3* Start measurement: sequence: {}", own_node_id, seq);
 
                         // Create payload with repeating bytes of the sequence number (use low byte)
                         let seq_byte = (seq & 0xFF) as u8;
@@ -306,7 +325,8 @@ async fn main(spawner: Spawner) {
                             log::error!("Arrived sequences buffer full, cannot track more sequences.");
                         });
                     } else if let Some(interval) = parse_interval_command(command_str) {
-                        let old_interval = SEND_MESSAGE_INTERVAL_SECS.swap(interval, Ordering::Relaxed);
+                        let old_interval = send_messagae_interval;
+                        send_messagae_interval = interval;
                         if interval > 0 && old_interval == 0 {
                             // Resuming automatic sending, schedule next send
                             next_send_time = Instant::now() + Duration::from_secs(interval);
