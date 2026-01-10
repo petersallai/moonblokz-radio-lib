@@ -615,7 +615,7 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn send_packet(&mut self, packet: &RadioPacket, own_node_id: u32) -> Result<(), RadioDeviceError> {
+    async fn send_packet(&mut self, packet: &RadioPacket, _own_node_id: u32) -> Result<(), RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -803,7 +803,7 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn do_cad(&mut self, own_node_id: u32) -> Result<bool, RadioDeviceError> {
+    async fn do_cad(&mut self, _own_node_id: u32) -> Result<bool, RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized

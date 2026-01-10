@@ -22,7 +22,7 @@ use moonblokz_radio_lib::{IncomingMessageItem, RadioConfiguration};
 use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
 
 const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
-const DEFAULT_SEND_MESSAGE_INTERVAL_SECS: u64 = 60; // Interval between sending messages
+const DEFAULT_SEND_MESSAGE_INTERVAL_SECS: u64 = 300; // Interval between sending messages
 
 type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
@@ -313,6 +313,13 @@ async fn main(spawner: Spawner) {
                         let payload: [u8; TEST_BLOCK_SIZE] = [seq_byte; TEST_BLOCK_SIZE];
 
                         let message = RadioMessage::add_block_with(own_node_id, seq, &payload);
+                        log::info!(
+                            "[{}] *TM7* Sending AddBlock: sender: {}, sequence: {}, length: {}",
+                            own_node_id,
+                            own_node_id,
+                            seq,
+                            message.length()
+                        );
                         if radio_communication_manager.send_message(message).is_err() {
                             log::error!("Failed to send measurement message with sequence number {}", seq);
                         }
