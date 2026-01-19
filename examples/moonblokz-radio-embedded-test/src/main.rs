@@ -33,7 +33,8 @@ use core::panic::PanicInfo;
 fn panic(_info: &PanicInfo) -> ! {
     // Break into debugger if attached, then spin.
     loop {
-        cortex_m::asm::bkpt();
+        //cortex_m::asm::bkpt();
+        rp2040_hal::reset();
     }
 }
 
@@ -66,13 +67,18 @@ fn parse_interval_command(command: &str) -> Option<u64> {
     None
 }
 
+/// Check if the command starts with /CM to request connection matrix into log
+fn is_connection_matrix_command(command: &str) -> bool {
+    command.trim().starts_with("/CM")
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let mut send_messagae_interval = DEFAULT_SEND_MESSAGE_INTERVAL_SECS;
+    let mut send_message_interval = DEFAULT_SEND_MESSAGE_INTERVAL_SECS;
     let p = embassy_rp::init(Default::default());
     //let _driver = Driver::new(p.USB, Irqs);
     //  spawner.spawn(logger_task(driver)).unwrap();
-    rp_usb_console::start(spawner, log::LevelFilter::Trace, p.USB, Some(COMMAND_CHANNEL.sender()));
+    rp_usb_console::start(spawner, log::LevelFilter::Debug, p.USB, Some(COMMAND_CHANNEL.sender()));
 
     let command_receiver = COMMAND_CHANNEL.receiver();
 
@@ -185,7 +191,7 @@ async fn main(spawner: Spawner) {
     }
     log::info!("Radio communication manager initialized");
     let mut sequence_number: u32 = own_node_id * 10000;
-    let mut arrived_sequences: Vec<u32, 1000> = Vec::new();
+    let mut arrived_sequences: Vec<u32, 100> = Vec::new();
     let mut next_send_time = embassy_time::Instant::now() + Duration::from_secs(5);
     let mut led_off_time: Option<Instant> = None; // Track when to turn LED off
 
@@ -200,7 +206,7 @@ async fn main(spawner: Spawner) {
 
         // Calculate next LED check time
         let led_check_time = led_off_time.unwrap_or(Instant::now() + Duration::from_secs(3600));
-
+        debug_indicator.toggle();
         match select3(
             radio_communication_manager.receive_message(),
             Timer::at(next_send_time.min(led_check_time)),
@@ -274,7 +280,7 @@ async fn main(spawner: Spawner) {
                 }
             }
             Either3::Second(_) => {
-                if send_messagae_interval == 0 {
+                if send_message_interval == 0 {
                     // Automatic sending disabled, reset next_send_time to far future
                     next_send_time = Instant::now() + Duration::from_secs(u64::MAX / 2);
                 } else if Instant::now() >= next_send_time {
@@ -300,7 +306,7 @@ async fn main(spawner: Spawner) {
                     });
                     sequence_number += 1;
 
-                    next_send_time += Duration::from_secs(send_messagae_interval);
+                    next_send_time += Duration::from_secs(send_message_interval);
                 }
             }
             Either3::Third(command_msg) => {
@@ -332,13 +338,16 @@ async fn main(spawner: Spawner) {
                             log::error!("Arrived sequences buffer full, cannot track more sequences.");
                         });
                     } else if let Some(interval) = parse_interval_command(command_str) {
-                        let old_interval = send_messagae_interval;
-                        send_messagae_interval = interval;
+                        let old_interval = send_message_interval;
+                        send_message_interval = interval;
                         if interval > 0 && old_interval == 0 {
                             // Resuming automatic sending, schedule next send
                             next_send_time = Instant::now() + Duration::from_secs(interval);
                         }
                         log::info!("[{}] Message send interval set to {} seconds", own_node_id, interval);
+                    } else if is_connection_matrix_command(command_str) {
+                        let _ = radio_communication_manager
+                            .report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::RequestConnectionMatrixIntoLog);
                     } else {
                         log::info!("Command: arrived {}", command_str);
                     }

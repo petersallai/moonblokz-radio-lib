@@ -858,7 +858,57 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize> RelayMana
                     .add_or_update_message(message, &self.connection_matrix, &self.connection_matrix[0], &sender_connections, None);
             }
             MessageProcessingResult::AlreadyHaveMessage(_, _, _) => { /*We don't have tasks for already processed messages here. */ }
+            #[cfg(feature = "connection-matrix-logging")]
+            MessageProcessingResult::RequestConnectionMatrixIntoLog => {
+                self.log_connection_matrix();
+            }
         }
+    }
+
+    #[cfg(feature = "connection-matrix-logging")]
+    /// Logs the current connection matrix in an encoded format. This method is for debug purposes only and can be enabled via the "connection-matrix-logging" feature.
+    fn log_connection_matrix(&self) {
+        /// Maximum number of encoded values per log line before breaking to a new line
+        const MAX_VALUES_PER_LINE: usize = 100;
+
+        /// Encoder table: maps 0-63 to safe characters (A-Z, a-z, 0-9, -, _)
+        const ENCODER_TABLE: [u8; 64] = [
+            b'A', b'B', b'C', b'D', b'E', b'F', b'G', b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T', b'U', b'V', b'W', b'X',
+            b'Y', b'Z', b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j', b'k', b'l', b'm', b'n', b'o', b'p', b'q', b'r', b's', b't', b'u', b'v',
+            b'w', b'x', b'y', b'z', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'-', b'_',
+        ];
+
+        log::info!(
+            "[{}] *TM9* Logging Connection Matrix, node_count: {}",
+            self.own_node_id,
+            self.connected_nodes_count
+        );
+
+        for row in 0..self.connected_nodes_count {
+            let node_id = self.connection_matrix_nodes[row];
+
+            // Encode all values for this row in chunks
+            let mut col = 0;
+            while col < self.connected_nodes_count {
+                // Build encoded string for this chunk
+                let mut buffer: [u8; MAX_VALUES_PER_LINE] = [0; MAX_VALUES_PER_LINE];
+                let chunk_end = min(col + MAX_VALUES_PER_LINE, self.connected_nodes_count);
+                let chunk_len = chunk_end - col;
+
+                for (i, c) in (col..chunk_end).enumerate() {
+                    let value = self.connection_matrix[row][c] & QUALITY_MASK; // Get lower 6 bits
+                    buffer[i] = ENCODER_TABLE[value as usize];
+                }
+
+                // Safety: buffer contains only ASCII characters from ENCODER_TABLE
+                let encoded_str = core::str::from_utf8(&buffer[..chunk_len]).unwrap_or("");
+
+                log::info!("[{}] *TM9* connection_matrix_row: {}, values:{}", self.own_node_id, node_id, encoded_str);
+
+                col = chunk_end;
+            }
+        }
+        log::info!("[{}] *TM9* Logging Connection Matrix ended", self.own_node_id);
     }
 }
 

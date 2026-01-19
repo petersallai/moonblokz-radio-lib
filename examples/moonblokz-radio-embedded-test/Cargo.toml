@@ -41,10 +41,11 @@ lora-phy = { git = "https://github.com/lora-rs/lora-rs.git", default-features = 
 
 log = "0.4"
 
-rp-usb-console = { version = "0.2.3"}
-moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-rp-lora-sx1262","memory-config-large"] }
+rp-usb-console = { path="../../../rp-usb-console" }
+moonblokz-radio-lib = { path = "../../", default-features = false, features = ["radio-device-rp-lora-sx1262","memory-config-medium","connection-matrix-logging"] }
 
 heapless = "0.9"
+rp2040-hal = { version = "0.11"}
 
 [profile.release]
 lto = true

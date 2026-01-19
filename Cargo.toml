@@ -30,6 +30,9 @@ memory-config-large = []
 #Enables packet level software CRC checking (16 bit) in radio module.
 soft-packet-crc = []
 
+#Enables logging of connection matrix into log output for debugging purposes.
+connection-matrix-logging = []
+
 #Default to echo device for easy testing
 default = ["radio-device-echo","memory-config-large"]
 

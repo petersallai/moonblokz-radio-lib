@@ -712,6 +712,8 @@ pub enum MessageProcessingResult {
     ///
     /// Arguments: (message_type, sequence, payload_checksum)
     AlreadyHaveMessage(u8, u32, u32),
+    #[cfg(feature = "connection-matrix-logging")]
+    RequestConnectionMatrixIntoLog,
 }
 
 /// Item delivered to the application via the incoming message queue

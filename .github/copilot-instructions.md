@@ -132,6 +132,12 @@ link_quality = 0.7 × SNR(normalized) + 0.3 × RSSI(normalized)
 
 These affect: connection matrix size, wait pool size, packet buffers. Do NOT change without understanding RAM implications.
 
+**Debug Features**:
+- `connection-matrix-logging` - Enables `MessageProcessingResult::RequestConnectionMatrixIntoLog` and `log_connection_matrix()` method
+  - Logs connection matrix at error level in compact encoded format (A-Z, a-z, 0-9, -, _ = values 0-63)
+  - Each log line prefixed with `[node_id]` for consistency
+  - Long rows split into chunks of 100 characters per line
+
 **Memory Management Philosophy**:
 - **Fixed-Size Buffers**: All radio messages/packets allocated to maximum supported size
 - **Bounded Data Structures**: All internal structures have fixed, compile-time size
@@ -235,6 +241,7 @@ The library's public interface (`lib.rs`) provides four primary entry points:
      - `MessageProcessingResult::RequestedBlockNotFound(seq)` - Node missing data
      - `MessageProcessingResult::AlreadyHaveMessage(type, seq, checksum)` - Duplicate message
      - `MessageProcessingResult::NewBlockAdded` - Valid new data, prepare for relay
+     - `MessageProcessingResult::RequestConnectionMatrixIntoLog` - Debug: dumps connection matrix to logs (requires `connection-matrix-logging` feature)
 
 **Multiple Instance Support**: `RadioCommunicatorManager` struct allows multiple instances to coexist (essential for simulation use case).
 
@@ -382,6 +389,15 @@ For `request_full_block` and `request_block_part` responses:
 
 Radio device selected by mutually-exclusive features - see compile-time assertions in `lib.rs`.
 
+### Logging Pattern
+
+All log statements follow a consistent format with node ID prefix:
+```rust
+log::debug!("[{}] Message text here", self.own_node_id);
+log::error!("[{}] Error message", self.own_node_id);
+```
+This enables filtering logs by node in multi-node simulations.
+
 ## Testing
 
 ```bash
@@ -391,7 +407,7 @@ cargo test --features std,radio-device-echo,memory-config-large
 cargo test --features std,radio-device-simulator,memory-config-large
 
 # Tests live in #[cfg(all(test, feature = "std"))] blocks
-# See relay_manager.rs lines 865+ for examples
+# See relay_manager.rs tests module (after line 910) for examples
 ```
 
 ## Build Commands
