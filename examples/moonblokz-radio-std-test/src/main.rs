@@ -44,7 +44,7 @@ async fn main(spawner: Spawner) {
         scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
-    _ = radio_communication_manager_temp_1.initialize(radio_configuration, spawner, radio_device_1, 0, 0);
+    _ = radio_communication_manager_temp_1.initialize(radio_configuration, &spawner, radio_device_1, 0, 0);
     log!(log::Level::Debug, "radio communication manager 1 started");
     let radio_communication_manager_1: &'static RadioCommunicationManager = Box::leak(Box::new(radio_communication_manager_temp_1));
     log!(log::Level::Debug, "spawning task to send messages to radio communication manager 1");
@@ -64,7 +64,7 @@ async fn main(spawner: Spawner) {
         scoring_matrix: ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0),
     };
 
-    let res = radio_communication_manager_temp_2.initialize(radio_configuration, spawner, radio_device_2, 1, 1);
+    let res = radio_communication_manager_temp_2.initialize(radio_configuration, &spawner, radio_device_2, 1, 1);
     if res.is_err() {
         log!(log::Level::Error, "Error initializing radio communication manager 2: {:?}", res.err());
     }

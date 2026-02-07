@@ -184,7 +184,7 @@ async fn main(spawner: Spawner) {
     };
 
     if radio_communication_manager
-        .initialize(radio_configuration, spawner, radio_device, own_node_id, own_node_id as u64)
+        .initialize(radio_configuration, &spawner, radio_device, own_node_id, own_node_id as u64)
         .is_err()
     {
         log::error!("Failed to initialize radio communication manager");

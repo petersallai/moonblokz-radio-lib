@@ -787,7 +787,7 @@ enum RadioCommunicationManagerState {
 /// let mut manager = RadioCommunicationManager::new();
 ///
 /// // Initialize (in async context with spawner and radio device)
-/// manager.initialize(config, spawner, radio_device, own_node_id, rng_seed)?;
+/// manager.initialize(config, &spawner, radio_device, own_node_id, rng_seed)?;
 ///
 /// // Send a message
 /// let message = RadioMessage::request_echo_with(own_node_id);
@@ -837,7 +837,7 @@ impl RadioCommunicationManager {
     ///
     /// # Arguments
     /// * `radio_config` - Configuration for timing and network behavior
-    /// * `spawner` - Embassy executor spawner for async tasks
+    /// * `spawner` - Embassy executor spawner for async tasks (borrowed, not consumed)
     /// * `radio_device` - Initialized radio hardware device
     /// * `own_node_id` - This node's unique identifier in the network
     /// * `rng_seed` - Seed for random number generation (timing jitter, etc.)
@@ -851,13 +851,13 @@ impl RadioCommunicationManager {
     /// # Example
     /// ```rust,ignore
     /// let mut manager = RadioCommunicationManager::new();
-    /// manager.initialize(config, spawner, radio_device, 42, 12345)?;
+    /// manager.initialize(config, &spawner, radio_device, 42, 12345)?;
     /// ```
     #[cfg(feature = "embedded")]
     pub fn initialize(
         &mut self,
         radio_config: RadioConfiguration,
-        spawner: Spawner,
+        spawner: &Spawner,
         radio_device: RadioDevice,
         own_node_id: u32,
         rng_seed: u64,
@@ -885,7 +885,7 @@ impl RadioCommunicationManager {
     ///
     /// # Arguments
     /// * `radio_config` - Configuration for timing and network behavior
-    /// * `spawner` - Embassy executor spawner for async tasks
+    /// * `spawner` - Embassy executor spawner for async tasks (borrowed, not consumed)
     /// * `radio_device` - Initialized radio hardware device
     /// * `own_node_id` - This node's unique identifier in the network
     /// * `rng_seed` - Seed for random number generation (timing jitter, etc.)
@@ -903,7 +903,7 @@ impl RadioCommunicationManager {
     pub fn initialize(
         &mut self,
         radio_config: RadioConfiguration,
-        spawner: Spawner,
+        spawner: &Spawner,
         radio_device: RadioDevice,
         own_node_id: u32,
         rng_seed: u64,
@@ -950,7 +950,7 @@ impl RadioCommunicationManager {
     ///
     /// # Arguments
     /// * `radio_config` - Configuration decomposed into individual parameters
-    /// * `spawner` - Embassy executor for spawning tasks
+    /// * `spawner` - Embassy executor for spawning tasks (borrowed, not consumed)
     /// * `radio_device` - Radio hardware abstraction
     /// * `outgoing_message_queue` - Static reference to outgoing message channel
     /// * `incoming_message_queue` - Static reference to incoming message channel
@@ -973,7 +973,7 @@ impl RadioCommunicationManager {
     fn initialize_common(
         &mut self,
         radio_config: RadioConfiguration,
-        spawner: Spawner,
+        spawner: &Spawner,
         radio_device: RadioDevice,
         outgoing_message_queue: &'static OutgoingMessageQueue,
         incoming_message_queue: &'static IncomingMessageQueue,
