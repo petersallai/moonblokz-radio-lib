@@ -113,7 +113,7 @@ async fn main(spawner: Spawner) {
 
     let mut radio_device: RadioDevice = RadioDevice::new();
     //TODO: use some general configuration for the radio, not hardcoded node_id
-    if own_node_id == 2754 {
+    if own_node_id == 2754 || own_node_id == 6953 {
         //RP2040+Lora module
         if radio_device
             .initialize(
