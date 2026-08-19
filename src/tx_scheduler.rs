@@ -42,11 +42,19 @@ use crate::MAX_NODE_COUNT;
 use crate::{OutgoingMessageQueueReceiver, RxState, TxPacketQueueSender};
 
 /// Handle RX state updates and update the delay timeout accordingly
-fn calculate_rx_state_delay_timeout(rxstate: RxState, rx_state_delay_timeout: Instant, delay_between_packets: u16, own_node_id: u32) -> Instant {
+fn calculate_rx_state_delay_timeout(
+    rxstate: RxState,
+    rx_state_delay_timeout: Instant,
+    delay_between_packets: u16,
+    own_node_id: u32,
+) -> Instant {
     match rxstate {
         RxState::PacketedRxInProgress(packet_index, total_packet_count) => {
-            let remaining_packets = (total_packet_count as u64).saturating_sub(packet_index as u64).max(1);
-            let new_delay_timeout = Instant::now() + Duration::from_millis(remaining_packets * delay_between_packets as u64);
+            let remaining_packets = (total_packet_count as u64)
+                .saturating_sub(packet_index as u64)
+                .max(1);
+            let new_delay_timeout = Instant::now()
+                + Duration::from_millis(remaining_packets * delay_between_packets as u64);
             let updated_timeout = max(rx_state_delay_timeout, new_delay_timeout);
             log!(
                 log::Level::Trace,
@@ -59,7 +67,11 @@ fn calculate_rx_state_delay_timeout(rxstate: RxState, rx_state_delay_timeout: In
             updated_timeout
         }
         RxState::PacketedRxEnded => {
-            log!(log::Level::Trace, "[{}] Multi-packet RX ended, clearing TX delay", own_node_id);
+            log!(
+                log::Level::Trace,
+                "[{}] Multi-packet RX ended, clearing TX delay",
+                own_node_id
+            );
             Instant::now()
         }
     }
@@ -154,9 +166,18 @@ pub(crate) async fn tx_scheduler_task(
     let mut rx_state_delay_timeout = Instant::now();
     let delay_between_messages_duration = Duration::from_secs(delay_between_messages as u64);
     let delay_between_packets_duration = Duration::from_millis(delay_between_packets as u64);
-    log!(log::Level::Info, "[{}] TX scheduler task started", own_node_id);
+    log!(
+        log::Level::Info,
+        "[{}] TX scheduler task started",
+        own_node_id
+    );
     loop {
-        match select(outgoing_message_queue_receiver.receive(), rx_state_queue_receiver.receive()).await {
+        match select(
+            outgoing_message_queue_receiver.receive(),
+            rx_state_queue_receiver.receive(),
+        )
+        .await
+        {
             Either::First(message) => {
                 loop {
                     // Calculate the time since last transmission
@@ -169,21 +190,34 @@ pub(crate) async fn tx_scheduler_task(
                         delay_between_messages_duration - elapsed
                     };
 
-                    let remaining_rx_state_timeout = rx_state_delay_timeout.saturating_duration_since(Instant::now());
+                    let remaining_rx_state_timeout =
+                        rx_state_delay_timeout.saturating_duration_since(Instant::now());
 
                     //get the maximum of the remaining delay and the rx state timeout
-                    let mut remaining_delay = max(remaining_message_delay, remaining_rx_state_timeout);
+                    let mut remaining_delay =
+                        max(remaining_message_delay, remaining_rx_state_timeout);
 
                     if remaining_delay > Duration::from_secs(0) {
-                        remaining_delay += Duration::from_millis(rng.next_u64() % tx_maximum_random_delay as u64); // Add a random jitter to the delay
-                        match select(Timer::after(remaining_delay), rx_state_queue_receiver.receive()).await {
+                        remaining_delay +=
+                            Duration::from_millis(rng.next_u64() % tx_maximum_random_delay as u64); // Add a random jitter to the delay
+                        match select(
+                            Timer::after(remaining_delay),
+                            rx_state_queue_receiver.receive(),
+                        )
+                        .await
+                        {
                             Either::First(_) => {
                                 // Timer completed, proceed to send message
                                 break;
                             }
                             Either::Second(rxstate) => {
                                 // RX state update received, recalculate delay
-                                rx_state_delay_timeout = calculate_rx_state_delay_timeout(rxstate, rx_state_delay_timeout, delay_between_packets, own_node_id);
+                                rx_state_delay_timeout = calculate_rx_state_delay_timeout(
+                                    rxstate,
+                                    rx_state_delay_timeout,
+                                    delay_between_packets,
+                                    own_node_id,
+                                );
                                 // Continue loop to recalculate delays
                             }
                         }
@@ -191,11 +225,22 @@ pub(crate) async fn tx_scheduler_task(
                         break;
                     }
                 }
-                send_message_to_radio(&message, &radio_device_sender, delay_between_packets_duration, own_node_id).await;
+                send_message_to_radio(
+                    &message,
+                    &radio_device_sender,
+                    delay_between_packets_duration,
+                    own_node_id,
+                )
+                .await;
                 last_tx_time = Instant::now();
             }
             Either::Second(rxstate) => {
-                rx_state_delay_timeout = calculate_rx_state_delay_timeout(rxstate, rx_state_delay_timeout, delay_between_packets, own_node_id);
+                rx_state_delay_timeout = calculate_rx_state_delay_timeout(
+                    rxstate,
+                    rx_state_delay_timeout,
+                    delay_between_packets,
+                    own_node_id,
+                );
             }
         }
     }

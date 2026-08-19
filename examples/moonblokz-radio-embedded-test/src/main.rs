@@ -24,7 +24,8 @@ use moonblokz_radio_lib::{RadioCommunicationManager, RadioMessage};
 const TEST_BLOCK_SIZE: usize = 2000; // Size of the test block to send
 const DEFAULT_SEND_MESSAGE_INTERVAL_SECS: u64 = 300; // Interval between sending messages
 
-type CommandChannel = Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
+type CommandChannel =
+    Channel<CriticalSectionRawMutex, [u8; rp_usb_console::USB_READ_BUFFER_SIZE], 4>;
 static COMMAND_CHANNEL: CommandChannel = Channel::new();
 
 use core::panic::PanicInfo;
@@ -78,7 +79,12 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     //let _driver = Driver::new(p.USB, Irqs);
     //  spawner.spawn(logger_task(driver)).unwrap();
-    rp_usb_console::start(spawner, log::LevelFilter::Debug, p.USB, Some(COMMAND_CHANNEL.sender()));
+    rp_usb_console::start(
+        spawner,
+        log::LevelFilter::Debug,
+        p.USB,
+        Some(COMMAND_CHANNEL.sender()),
+    );
 
     let command_receiver = COMMAND_CHANNEL.receiver();
 
@@ -178,13 +184,21 @@ async fn main(spawner: Spawner) {
         echo_messages_target_interval: 100,
         echo_gathering_timeout: 1,
         relay_position_delay: 5,
-        scoring_matrix: moonblokz_radio_lib::ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 123u8, 47u8]),
+        scoring_matrix: moonblokz_radio_lib::ScoringMatrix::new_from_encoded(&[
+            255u8, 243u8, 65u8, 123u8, 47u8,
+        ]),
         retry_interval_for_missing_packets: 60,
         tx_maximum_random_delay: 200,
     };
 
     if radio_communication_manager
-        .initialize(radio_configuration, &spawner, radio_device, own_node_id, own_node_id as u64)
+        .initialize(
+            radio_configuration,
+            &spawner,
+            radio_device,
+            own_node_id,
+            own_node_id as u64,
+        )
         .is_err()
     {
         log::error!("Failed to initialize radio communication manager");
@@ -232,7 +246,11 @@ async fn main(spawner: Spawner) {
                                     msg.length()
                                 );
                                 let _ = radio_communication_manager
-                                    .report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::NewBlockAdded(msg));
+                                    .report_message_processing_status(
+                                        moonblokz_radio_lib::MessageProcessingResult::NewBlockAdded(
+                                            msg,
+                                        ),
+                                    );
                                 if arrived_sequences.len() == arrived_sequences.capacity() {
                                     // Remove the oldest sequence to make space
                                     arrived_sequences.remove(0);
@@ -242,7 +260,9 @@ async fn main(spawner: Spawner) {
                                 });
                             }
                         }
-                    } else if msg.message_type() == moonblokz_radio_lib::MessageType::RequestBlockPart as u8 {
+                    } else if msg.message_type()
+                        == moonblokz_radio_lib::MessageType::RequestBlockPart as u8
+                    {
                         let Some(sequence) = msg.sequence() else {
                             continue;
                         };
@@ -255,10 +275,15 @@ async fn main(spawner: Spawner) {
                             );
                             let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
-                            let mut response_message = RadioMessage::add_block_with(own_node_id, sequence, &payload);
+                            let mut response_message =
+                                RadioMessage::add_block_with(own_node_id, sequence, &payload);
 
-                            if let Some(request_blockpart_iterator) = msg.get_request_block_part_iterator() {
-                                let mut block_parts: [bool; moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT] = [false; moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT];
+                            if let Some(request_blockpart_iterator) =
+                                msg.get_request_block_part_iterator()
+                            {
+                                let mut block_parts: [bool;
+                                    moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT] =
+                                    [false; moonblokz_radio_lib::RADIO_MAX_PACKET_COUNT];
                                 for part in request_blockpart_iterator {
                                     block_parts[part.packet_index as usize] = true;
                                 }
@@ -269,13 +294,20 @@ async fn main(spawner: Spawner) {
                             }
                         }
                     }
-                } else if let Ok(IncomingMessageItem::CheckIfAlreadyHaveMessage(message_type, sequence, payload_checksum)) = message {
+                } else if let Ok(IncomingMessageItem::CheckIfAlreadyHaveMessage(
+                    message_type,
+                    sequence,
+                    payload_checksum,
+                )) = message
+                {
                     if arrived_sequences.contains(&sequence) {
-                        let _ = radio_communication_manager.report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::AlreadyHaveMessage(
-                            message_type,
-                            sequence,
-                            payload_checksum,
-                        ));
+                        let _ = radio_communication_manager.report_message_processing_status(
+                            moonblokz_radio_lib::MessageProcessingResult::AlreadyHaveMessage(
+                                message_type,
+                                sequence,
+                                payload_checksum,
+                            ),
+                        );
                     }
                 }
             }
@@ -286,7 +318,8 @@ async fn main(spawner: Spawner) {
                 } else if Instant::now() >= next_send_time {
                     let payload: [u8; TEST_BLOCK_SIZE] = [22; TEST_BLOCK_SIZE];
 
-                    let message = RadioMessage::add_block_with(own_node_id, sequence_number, &payload);
+                    let message =
+                        RadioMessage::add_block_with(own_node_id, sequence_number, &payload);
                     log::info!(
                         "[{}] *TM7* Sending AddBlock: sender: {}, sequence: {}, length: {}",
                         own_node_id,
@@ -295,7 +328,10 @@ async fn main(spawner: Spawner) {
                         message.length()
                     );
                     if radio_communication_manager.send_message(message).is_err() {
-                        log::error!("Failed to send message with sequence number {}", sequence_number);
+                        log::error!(
+                            "Failed to send message with sequence number {}",
+                            sequence_number
+                        );
                     }
                     if arrived_sequences.len() == arrived_sequences.capacity() {
                         // Remove the oldest sequence to make space
@@ -312,7 +348,11 @@ async fn main(spawner: Spawner) {
             Either3::Third(command_msg) => {
                 if let Ok(command_str) = core::str::from_utf8(&command_msg) {
                     if let Some(seq) = parse_measurement_command(command_str) {
-                        log::info!("[{}] *TM3* Start measurement: sequence: {}", own_node_id, seq);
+                        log::info!(
+                            "[{}] *TM3* Start measurement: sequence: {}",
+                            own_node_id,
+                            seq
+                        );
 
                         // Create payload with repeating bytes of the sequence number (use low byte)
                         let seq_byte = (seq & 0xFF) as u8;
@@ -327,7 +367,10 @@ async fn main(spawner: Spawner) {
                             message.length()
                         );
                         if radio_communication_manager.send_message(message).is_err() {
-                            log::error!("Failed to send measurement message with sequence number {}", seq);
+                            log::error!(
+                                "Failed to send measurement message with sequence number {}",
+                                seq
+                            );
                         }
 
                         // Track the sequence we just sent
@@ -335,7 +378,9 @@ async fn main(spawner: Spawner) {
                             arrived_sequences.remove(0);
                         }
                         arrived_sequences.push(seq).unwrap_or_else(|_| {
-                            log::error!("Arrived sequences buffer full, cannot track more sequences.");
+                            log::error!(
+                                "Arrived sequences buffer full, cannot track more sequences."
+                            );
                         });
                     } else if let Some(interval) = parse_interval_command(command_str) {
                         let old_interval = send_message_interval;
@@ -344,7 +389,11 @@ async fn main(spawner: Spawner) {
                             // Resuming automatic sending, schedule next send
                             next_send_time = Instant::now() + Duration::from_secs(interval);
                         }
-                        log::info!("[{}] Message send interval set to {} seconds", own_node_id, interval);
+                        log::info!(
+                            "[{}] Message send interval set to {} seconds",
+                            own_node_id,
+                            interval
+                        );
                     } else if is_connection_matrix_command(command_str) {
                         let _ = radio_communication_manager
                             .report_message_processing_status(moonblokz_radio_lib::MessageProcessingResult::RequestConnectionMatrixIntoLog);

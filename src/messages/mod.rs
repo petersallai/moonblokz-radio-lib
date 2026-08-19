@@ -26,5 +26,7 @@ pub mod radio_message;
 pub mod radio_packet;
 
 // Re-export public types for convenient access
-pub use radio_message::{EchoResultItem, EchoResultIterator, MessageType, MessageError, RadioMessage};
+pub use radio_message::{
+    EchoResultItem, EchoResultIterator, MessageError, MessageType, RadioMessage,
+};
 pub use radio_packet::RadioPacket;

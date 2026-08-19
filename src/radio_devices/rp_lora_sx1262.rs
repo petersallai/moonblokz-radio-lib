@@ -215,7 +215,11 @@ enum RadioDeviceState {
         /// LoRa PHY instance with SX1262 configuration
         lora: LoRa<
             Sx126x<
-                ExclusiveDevice<Spi<'static, embassy_rp::peripherals::SPI1, embassy_rp::spi::Async>, Output<'static>, Delay>,
+                ExclusiveDevice<
+                    Spi<'static, embassy_rp::peripherals::SPI1, embassy_rp::spi::Async>,
+                    Output<'static>,
+                    Delay,
+                >,
                 GenericSx126xInterfaceVariant<Output<'static>, Input<'static>>,
                 Sx1262,
             >,
@@ -266,7 +270,9 @@ pub async fn radio_device_task(
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
-    radio_device.run(tx_receiver, rx_sender, own_node_id, rng_seed).await
+    radio_device
+        .run(tx_receiver, rx_sender, own_node_id, rng_seed)
+        .await
 }
 
 /// LoRa SX1262 Radio Device
@@ -372,7 +378,15 @@ impl RadioDevice {
             None
         };
         log::trace!("[{}] Initializing spi_device", own_node_id);
-        let spi = Spi::new(spi, clk_pin, mosi_pin, miso_pin, tx_dma, rx_dma, Config::default());
+        let spi = Spi::new(
+            spi,
+            clk_pin,
+            mosi_pin,
+            miso_pin,
+            tx_dma,
+            rx_dma,
+            Config::default(),
+        );
         let spi_device = match ExclusiveDevice::new(spi, spi_nss, Delay) {
             Ok(device) => device,
             Err(_err) => {
@@ -405,7 +419,12 @@ impl RadioDevice {
 
         log::trace!("[{}] Initializing modulation parameters", own_node_id);
         let mdltn_params = {
-            match lora.create_modulation_params(spreading_factor, bandwidth, coding_rate, lora_frequency_in_hz) {
+            match lora.create_modulation_params(
+                spreading_factor,
+                bandwidth,
+                coding_rate,
+                lora_frequency_in_hz,
+            ) {
                 Ok(mp) => mp,
                 Err(_err) => {
                     return Err(RadioDeviceInitError::ModulationParamsError);
@@ -430,7 +449,8 @@ impl RadioDevice {
             #[cfg(not(feature = "soft-packet-crc"))]
             let rx_buffer_size = RADIO_PACKET_SIZE as u8;
 
-            match lora.create_rx_packet_params(8, false, rx_buffer_size, true, false, &mdltn_params) {
+            match lora.create_rx_packet_params(8, false, rx_buffer_size, true, false, &mdltn_params)
+            {
                 Ok(pp) => pp,
                 Err(_err) => {
                     return Err(RadioDeviceInitError::RXPacketParamsError);
@@ -480,7 +500,13 @@ impl RadioDevice {
     /// - RX queue full: Drop packet and log warning
     /// - TX failure: Log error and continue
     /// - CAD failure: Wait and retry
-    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32, rng_seed: u64) -> ! {
+    async fn run(
+        &mut self,
+        tx_receiver: TxPacketQueueReceiver,
+        rx_sender: RxPacketQueueSender,
+        own_node_id: u32,
+        rng_seed: u64,
+    ) -> ! {
         let mut rng = WyRand::seed_from_u64(rng_seed);
         loop {
             // Race between receiving a packet and getting a TX request
@@ -511,7 +537,10 @@ impl RadioDevice {
                         }
 
                         if rx_sender.try_send(rx_packet).is_err() {
-                            log::warn!("[{}] RX queue full, dropping received packet.", own_node_id);
+                            log::warn!(
+                                "[{}] RX queue full, dropping received packet.",
+                                own_node_id
+                            );
                         }
                     }
                     Err(RadioDeviceError::CRCMismatch) => {
@@ -522,7 +551,9 @@ impl RadioDevice {
                     }
                 },
                 Either::Second(tx_packet) => {
-                    if tx_packet.message_type() == MessageType::AddBlock as u8 || tx_packet.message_type() == MessageType::AddTransaction as u8 {
+                    if tx_packet.message_type() == MessageType::AddBlock as u8
+                        || tx_packet.message_type() == MessageType::AddTransaction as u8
+                    {
                         log::trace!(
                             "[{}] Transmitting TX packet: type: {}, sequence: {}, length: {}, packet: {}/{}",
                             own_node_id,
@@ -544,12 +575,21 @@ impl RadioDevice {
                     loop {
                         log::trace!("[{}] Starting CAD before transmit", own_node_id);
                         //On my test hardware CAD sometimes never completes, so add a timeout
-                        match select(self.do_cad(own_node_id), Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS))).await {
+                        match select(
+                            self.do_cad(own_node_id),
+                            Timer::after(embassy_time::Duration::from_millis(CAD_TIMEOUT_MS)),
+                        )
+                        .await
+                        {
                             Either::First(Ok(false)) => {
                                 // Channel is clear; attempt a single send then exit loop
                                 log::trace!("[{}] Channel clear, transmitting packet", own_node_id);
                                 if self.send_packet(&tx_packet, own_node_id).await.is_err() {
-                                    log::warn!("[{}] Failed to transmit packet: type: {}", own_node_id, tx_packet.message_type());
+                                    log::warn!(
+                                        "[{}] Failed to transmit packet: type: {}",
+                                        own_node_id,
+                                        tx_packet.message_type()
+                                    );
                                 } else {
                                     if tx_packet.sequence().is_some() {
                                         log::debug!(
@@ -574,17 +614,20 @@ impl RadioDevice {
                             }
                             Either::First(Ok(true)) => {
                                 log::trace!("[{}] Channel busy, waiting before retry", own_node_id);
-                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME
+                                    + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                             Either::First(Err(_)) => {
                                 log::trace!("[{}] CAD error, waiting before retry", own_node_id);
-                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME
+                                    + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                             Either::Second(_) => {
                                 log::trace!("[{}] CAD timeout, waiting before retry", own_node_id);
-                                let wait_ms = CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
+                                let wait_ms = CAD_MINIMAL_WAIT_TIME
+                                    + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME;
                                 Timer::after(embassy_time::Duration::from_millis(wait_ms)).await;
                             }
                         }
@@ -615,7 +658,11 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn send_packet(&mut self, packet: &RadioPacket, _own_node_id: u32) -> Result<(), RadioDeviceError> {
+    async fn send_packet(
+        &mut self,
+        packet: &RadioPacket,
+        _own_node_id: u32,
+    ) -> Result<(), RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -640,11 +687,15 @@ impl RadioDevice {
                     output_buffer[..packet.length].copy_from_slice(&packet.data[..packet.length]);
                     // Append CRC-16 to the packet data
                     let crc = checksum16(&packet.data[..packet.length]);
-                    output_buffer[packet.length..packet.length + 2].copy_from_slice(&crc.to_le_bytes());
+                    output_buffer[packet.length..packet.length + 2]
+                        .copy_from_slice(&crc.to_le_bytes());
 
                     let slice = &output_buffer[..packet.length + 2];
 
-                    match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice).await {
+                    match lora
+                        .prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice)
+                        .await
+                    {
                         Ok(()) => {}
                         Err(_err) => {
                             return Err(RadioDeviceError::TransmissionFailed);
@@ -654,7 +705,10 @@ impl RadioDevice {
                 #[cfg(not(feature = "soft-packet-crc"))]
                 {
                     let slice = &packet.data[..packet.length.min(RADIO_PACKET_SIZE)];
-                    match lora.prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice).await {
+                    match lora
+                        .prepare_for_tx(mdltn_params, tx_pkt_params, 22, slice)
+                        .await
+                    {
                         Ok(()) => {}
                         Err(_err) => {
                             return Err(RadioDeviceError::TransmissionFailed);
@@ -700,7 +754,10 @@ impl RadioDevice {
     /// # Ok(())
     /// # }
     /// ```
-    async fn receive_packet(&mut self, own_node_id: u32) -> Result<ReceivedPacket, RadioDeviceError> {
+    async fn receive_packet(
+        &mut self,
+        own_node_id: u32,
+    ) -> Result<ReceivedPacket, RadioDeviceError> {
         match &mut self.state {
             RadioDeviceState::NotInited => {
                 // Return error if not initialized
@@ -712,7 +769,10 @@ impl RadioDevice {
                 mdltn_params,
                 ..
             } => {
-                match lora.prepare_for_rx(RxMode::Continuous, &mdltn_params, &rx_pkt_params).await {
+                match lora
+                    .prepare_for_rx(RxMode::Continuous, &mdltn_params, &rx_pkt_params)
+                    .await
+                {
                     Ok(()) => {}
                     Err(_) => {
                         return Err(RadioDeviceError::ReceiveFailed);
@@ -741,7 +801,10 @@ impl RadioDevice {
                                 return Err(RadioDeviceError::ReceiveFailed);
                             }
                             let data_len = copy_len - 2;
-                            let received_crc = u16::from_le_bytes([self.receive_buffer[data_len], self.receive_buffer[data_len + 1]]);
+                            let received_crc = u16::from_le_bytes([
+                                self.receive_buffer[data_len],
+                                self.receive_buffer[data_len + 1],
+                            ]);
                             let calculated_crc = checksum16(&self.receive_buffer[..data_len]);
 
                             if received_crc != calculated_crc {
@@ -759,8 +822,14 @@ impl RadioDevice {
                             data[..data_len].copy_from_slice(&self.receive_buffer[..data_len]);
 
                             Ok(ReceivedPacket {
-                                packet: RadioPacket { data, length: data_len },
-                                link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
+                                packet: RadioPacket {
+                                    data,
+                                    length: data_len,
+                                },
+                                link_quality: calculate_link_quality(
+                                    packet_status.rssi,
+                                    packet_status.snr,
+                                ),
                             })
                         }
                         #[cfg(not(feature = "soft-packet-crc"))]
@@ -768,8 +837,14 @@ impl RadioDevice {
                             data[..copy_len].copy_from_slice(&self.receive_buffer[..copy_len]);
 
                             Ok(ReceivedPacket {
-                                packet: RadioPacket { data, length: copy_len },
-                                link_quality: calculate_link_quality(packet_status.rssi, packet_status.snr),
+                                packet: RadioPacket {
+                                    data,
+                                    length: copy_len,
+                                },
+                                link_quality: calculate_link_quality(
+                                    packet_status.rssi,
+                                    packet_status.snr,
+                                ),
                             })
                         }
                     }
@@ -809,8 +884,12 @@ impl RadioDevice {
                 // Return error if not initialized
                 Err(RadioDeviceError::InitializationFailed)
             }
-            RadioDeviceState::Inited { lora, mdltn_params, .. } => {
-                lora.prepare_for_cad(mdltn_params).await.map_err(|_| RadioDeviceError::CADFailed)?;
+            RadioDeviceState::Inited {
+                lora, mdltn_params, ..
+            } => {
+                lora.prepare_for_cad(mdltn_params)
+                    .await
+                    .map_err(|_| RadioDeviceError::CADFailed)?;
                 match lora.cad(&mdltn_params).await {
                     Ok(cad_result) => Ok(cad_result),
                     Err(_err) => Err(RadioDeviceError::CADFailed), // Use correct error type
@@ -903,8 +982,14 @@ mod tests {
         }
 
         // Test specific messages
-        assert_eq!(format!("{}", RadioDeviceInitError::InterfaceError), "failed to create SX126x interface variant");
-        assert_eq!(format!("{}", RadioDeviceInitError::LoraError), "failed to initialize LoRa PHY layer");
+        assert_eq!(
+            format!("{}", RadioDeviceInitError::InterfaceError),
+            "failed to create SX126x interface variant"
+        );
+        assert_eq!(
+            format!("{}", RadioDeviceInitError::LoraError),
+            "failed to initialize LoRa PHY layer"
+        );
     }
 
     #[test]

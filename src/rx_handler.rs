@@ -42,8 +42,9 @@
 
 use crate::relay_manager::RelayResult;
 use crate::{
-    IncomingMessageItem, MessageProcessingResult, MessageType, RxState, ScoringMatrix, CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE,
-    LAST_RECEIVED_MESSAGE_BUFFER_SIZE, MAX_NODE_COUNT, RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, WAIT_POOL_SIZE,
+    IncomingMessageItem, MessageProcessingResult, MessageType, RxState, ScoringMatrix,
+    CONNECTION_MATRIX_SIZE, INCOMING_PACKET_BUFFER_SIZE, LAST_RECEIVED_MESSAGE_BUFFER_SIZE,
+    MAX_NODE_COUNT, RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, WAIT_POOL_SIZE,
 };
 use embassy_futures::select::{select4, Either4};
 use embassy_sync::channel::TrySendError;
@@ -54,8 +55,9 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 use crate::{
-    relay_manager::RelayManager, IncomingMessageQueueSender, OutgoingMessageQueueSender, ProcessResultQueueReceiver, RadioMessage, RadioPacket,
-    RxPacketQueueReceiver, RxStateQueueSender,
+    relay_manager::RelayManager, IncomingMessageQueueSender, OutgoingMessageQueueSender,
+    ProcessResultQueueReceiver, RadioMessage, RadioPacket, RxPacketQueueReceiver,
+    RxStateQueueSender,
 };
 
 /// Buffered packet with arrival timestamp for assembly tracking
@@ -118,7 +120,9 @@ impl LastReceivedMessages {
     /// # Arguments
     /// * `message` - The received message to record
     fn add_message(&mut self, message: &RadioMessage) {
-        if let (Some(sequence), Some(payload_checksum)) = (message.sequence(), message.payload_checksum()) {
+        if let (Some(sequence), Some(payload_checksum)) =
+            (message.sequence(), message.payload_checksum())
+        {
             self.add_message_with_parameters(message.message_type(), sequence, payload_checksum);
         }
     }
@@ -132,7 +136,12 @@ impl LastReceivedMessages {
     /// * `message_type` - Type of the message
     /// * `sequence` - Sequence number
     /// * `payload_checksum` - CRC32C checksum of payload
-    fn add_message_with_parameters(&mut self, message_type: u8, sequence: u32, payload_checksum: u32) {
+    fn add_message_with_parameters(
+        &mut self,
+        message_type: u8,
+        sequence: u32,
+        payload_checksum: u32,
+    ) {
         self.messages[self.circular_index] = Some(LastReceivedMessage {
             message_type,
             sequence,
@@ -152,10 +161,15 @@ impl LastReceivedMessages {
     /// # Returns
     /// true if this packet/message was already received, false otherwise
     fn contains_message(&self, packet: &RadioPacket) -> bool {
-        if let (Some(sequence), Some(payload_checksum)) = (packet.sequence(), packet.payload_checksum()) {
+        if let (Some(sequence), Some(payload_checksum)) =
+            (packet.sequence(), packet.payload_checksum())
+        {
             //perform linear search - the buffer is small so this is efficient enough
             for entry in self.messages.iter().flatten() {
-                if entry.message_type == packet.message_type() && entry.sequence == sequence && entry.payload_checksum == payload_checksum {
+                if entry.message_type == packet.message_type()
+                    && entry.sequence == sequence
+                    && entry.payload_checksum == payload_checksum
+                {
                     return true;
                 }
             }
@@ -209,8 +223,10 @@ pub(crate) async fn rx_handler_task(
     own_node_id: u32,
     rng_seed: u64,
 ) -> ! {
-    let mut packet_buffer: [Option<PacketBufferItem>; INCOMING_PACKET_BUFFER_SIZE] = [const { None }; INCOMING_PACKET_BUFFER_SIZE];
-    let mut packet_check_buffer: [u8; INCOMING_PACKET_BUFFER_SIZE] = [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMING_PACKET_BUFFER_SIZE];
+    let mut packet_buffer: [Option<PacketBufferItem>; INCOMING_PACKET_BUFFER_SIZE] =
+        [const { None }; INCOMING_PACKET_BUFFER_SIZE];
+    let mut packet_check_buffer: [u8; INCOMING_PACKET_BUFFER_SIZE] =
+        [PACKET_CHECK_BUFFER_EMPTY_VALUE; INCOMING_PACKET_BUFFER_SIZE];
     let mut last_received_messages = LastReceivedMessages::new();
 
     let mut rng = WyRand::seed_from_u64(rng_seed);
@@ -224,8 +240,13 @@ pub(crate) async fn rx_handler_task(
         rng.next_u64(),
     );
 
-    let mut next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
-    log!(log::Level::Info, "[{}] RX handler task started", own_node_id);
+    let mut next_missing_packet_check = Instant::now()
+        + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
+    log!(
+        log::Level::Info,
+        "[{}] RX handler task started",
+        own_node_id
+    );
     loop {
         match select4(
             rx_packet_queue_receiver.receive(),
@@ -258,7 +279,11 @@ pub(crate) async fn rx_handler_task(
                         own_node_id,
                     );
                 } else if rx_packet.total_packet_count() == 0 {
-                    log!(Level::Warn, "[{}] Received empty packet, skipping", own_node_id);
+                    log!(
+                        Level::Warn,
+                        "[{}] Received empty packet, skipping",
+                        own_node_id
+                    );
                     continue;
                 } else {
                     // Handle multi-packet message
@@ -286,11 +311,17 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if packet_index == total_packet_count - 1 {
-                        if rx_state_queue_sender.try_send(RxState::PacketedRxEnded).is_err() {
+                        if rx_state_queue_sender
+                            .try_send(RxState::PacketedRxEnded)
+                            .is_err()
+                        {
                             log::warn!("[{}] Failed to send PacketedRxEnded to rx_state_queue. The queue is full.", own_node_id);
                         }
                     } else if rx_state_queue_sender
-                        .try_send(RxState::PacketedRxInProgress(packet_index as u8, total_packet_count as u8))
+                        .try_send(RxState::PacketedRxInProgress(
+                            packet_index as u8,
+                            total_packet_count as u8,
+                        ))
                         .is_err()
                     {
                         log::warn!("[{}] Failed to send PacketedRxInProgress to rx_state_queue. The queue is full.", own_node_id);
@@ -326,11 +357,18 @@ pub(crate) async fn rx_handler_task(
                     let mut first_from_message = true;
                     let mut empty_index = PACKET_CHECK_BUFFER_EMPTY_VALUE;
                     // Header bytes are the first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
-                    let mut packet_header: [u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] = [0u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
+                    let mut packet_header: [u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] =
+                        [0u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
                     // Copy first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
-                    packet_header.copy_from_slice(&rx_packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
+                    packet_header.copy_from_slice(
+                        &rx_packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE],
+                    );
 
-                    for (i, packet) in packet_buffer.iter().enumerate().take(INCOMING_PACKET_BUFFER_SIZE) {
+                    for (i, packet) in packet_buffer
+                        .iter()
+                        .enumerate()
+                        .take(INCOMING_PACKET_BUFFER_SIZE)
+                    {
                         if let Some(packet) = packet {
                             if packet.packet.same_message(&packet_header) {
                                 if packet.packet.packet_index() == packet_index as u8 {
@@ -367,7 +405,9 @@ pub(crate) async fn rx_handler_task(
                             continue;
                         } else {
                             //we inititate a check to find if we have the content of this message
-                            if let (Some(sequence), Some(payload_checksum)) = (rx_packet.sequence(), rx_packet.payload_checksum()) {
+                            if let (Some(sequence), Some(payload_checksum)) =
+                                (rx_packet.sequence(), rx_packet.payload_checksum())
+                            {
                                 if incoming_message_queue_sender
                                     .try_send(IncomingMessageItem::CheckIfAlreadyHaveMessage(
                                         rx_packet.message_type(),
@@ -391,19 +431,31 @@ pub(crate) async fn rx_handler_task(
 
                     //if we can't find an empty slot, we delete the message with the oldest last packet
                     if empty_index == PACKET_CHECK_BUFFER_EMPTY_VALUE {
-                        log::trace!("[{}] No empty slot found, removing oldest packet.", own_node_id);
+                        log::trace!(
+                            "[{}] No empty slot found, removing oldest packet.",
+                            own_node_id
+                        );
                         let mut oldest_index: u8 = 0;
-                        let mut oldest_time = Instant::now() + embassy_time::Duration::from_secs(60);
+                        let mut oldest_time =
+                            Instant::now() + embassy_time::Duration::from_secs(60);
                         // Track oldest message by its first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
-                        let mut oldest_packet_header: [u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] = [0u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
+                        let mut oldest_packet_header: [u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] =
+                            [0u8; RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE];
 
-                        for (i, packet) in packet_buffer.iter().enumerate().take(INCOMING_PACKET_BUFFER_SIZE) {
+                        for (i, packet) in packet_buffer
+                            .iter()
+                            .enumerate()
+                            .take(INCOMING_PACKET_BUFFER_SIZE)
+                        {
                             if let Some(packet) = packet {
                                 if packet.arrival_time < oldest_time {
                                     oldest_time = packet.arrival_time;
                                     oldest_index = i as u8;
                                     // Copy first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
-                                    oldest_packet_header.copy_from_slice(&packet.packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]);
+                                    oldest_packet_header.copy_from_slice(
+                                        &packet.packet.data
+                                            [0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE],
+                                    );
                                 }
                             }
                         }
@@ -412,7 +464,9 @@ pub(crate) async fn rx_handler_task(
                         for packet in packet_buffer.iter_mut().take(INCOMING_PACKET_BUFFER_SIZE) {
                             if let Some(p) = packet {
                                 // Compare first RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE bytes
-                                if p.packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] == oldest_packet_header {
+                                if p.packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
+                                    == oldest_packet_header
+                                {
                                     *packet = None;
                                 }
                             }
@@ -431,11 +485,16 @@ pub(crate) async fn rx_handler_task(
 
                     // Check if we have all packets for this message
                     packet_check_buffer.fill(PACKET_CHECK_BUFFER_EMPTY_VALUE);
-                    for (i, packet_item) in packet_buffer.iter().enumerate().take(INCOMING_PACKET_BUFFER_SIZE) {
+                    for (i, packet_item) in packet_buffer
+                        .iter()
+                        .enumerate()
+                        .take(INCOMING_PACKET_BUFFER_SIZE)
+                    {
                         if let Some(packet_item) = packet_item {
                             if packet_item.packet.same_message(&packet_header) {
                                 // Mark this packet as received
-                                packet_check_buffer[packet_item.packet.packet_index() as usize] = i as u8;
+                                packet_check_buffer[packet_item.packet.packet_index() as usize] =
+                                    i as u8;
                             }
                         }
                     }
@@ -452,7 +511,11 @@ pub(crate) async fn rx_handler_task(
                     }
 
                     if all_packets_received {
-                        log!(Level::Trace, "[{}] All packets received for message", own_node_id);
+                        log!(
+                            Level::Trace,
+                            "[{}] All packets received for message",
+                            own_node_id
+                        );
                         // All packets received, create a RadioMessage
                         let mut radio_message = RadioMessage::new();
                         let mut assembly_failed = false;
@@ -462,13 +525,23 @@ pub(crate) async fn rx_handler_task(
                             if let Some(packet_item) = &packet_buffer[*packet_index as usize] {
                                 // Add the packet to the RadioMessage
                                 if let Err(_) = radio_message.add_packet(&packet_item.packet) {
-                                    log!(Level::Error, "[{}] Failed to add packet index {} to message", own_node_id, packet_index);
+                                    log!(
+                                        Level::Error,
+                                        "[{}] Failed to add packet index {} to message",
+                                        own_node_id,
+                                        packet_index
+                                    );
                                     assembly_failed = true;
                                     break;
                                 }
                                 packet_buffer[*packet_index as usize] = None; // Clear the packet from the buffer
                             } else {
-                                log!(Level::Error, "[{}] Packet index {} not found in buffer", own_node_id, packet_index);
+                                log!(
+                                    Level::Error,
+                                    "[{}] Packet index {} not found in buffer",
+                                    own_node_id,
+                                    packet_index
+                                );
                                 assembly_failed = true;
                                 break;
                             }
@@ -476,7 +549,8 @@ pub(crate) async fn rx_handler_task(
 
                         if assembly_failed {
                             // Clean up remaining packets from this message
-                            for packet in packet_buffer.iter_mut().take(INCOMING_PACKET_BUFFER_SIZE) {
+                            for packet in packet_buffer.iter_mut().take(INCOMING_PACKET_BUFFER_SIZE)
+                            {
                                 if let Some(p) = packet {
                                     if p.packet.same_message(&packet_header) {
                                         *packet = None;
@@ -521,7 +595,12 @@ pub(crate) async fn rx_handler_task(
                     );
                 }
 
-                if let MessageProcessingResult::AlreadyHaveMessage(message_type, sequence, payload_checksum) = process_result {
+                if let MessageProcessingResult::AlreadyHaveMessage(
+                    message_type,
+                    sequence,
+                    payload_checksum,
+                ) = process_result
+                {
                     log!(
                         Level::Trace,
                         "[{}] Already have message: type={}, sequence={}, checksum={}. Clearing from packet_buffer",
@@ -542,13 +621,19 @@ pub(crate) async fn rx_handler_task(
                         }
                     }
                     //add it to the last received message list, to handle next packets in shorter loop
-                    last_received_messages.add_message_with_parameters(message_type, sequence, payload_checksum);
+                    last_received_messages.add_message_with_parameters(
+                        message_type,
+                        sequence,
+                        payload_checksum,
+                    );
                 } else {
                     relay_manager.process_processing_result(process_result);
                 }
             }
             Either4::Third(_) => {
-                if let RelayResult::SendMessage(response_message) = relay_manager.process_timed_tasks() {
+                if let RelayResult::SendMessage(response_message) =
+                    relay_manager.process_timed_tasks()
+                {
                     let result = outgoing_message_queue_sender.try_send(response_message);
                     if let Err(result_error) = result {
                         let TrySendError::Full(failed_message) = result_error;
@@ -564,12 +649,21 @@ pub(crate) async fn rx_handler_task(
             }
             Either4::Fourth(_) => {
                 // Time to check for missing packets
-                log!(Level::Trace, "[{}] Checking for missing packets", own_node_id);
-                next_missing_packet_check = Instant::now() + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
+                log!(
+                    Level::Trace,
+                    "[{}] Checking for missing packets",
+                    own_node_id
+                );
+                next_missing_packet_check = Instant::now()
+                    + embassy_time::Duration::from_secs(retry_interval_for_missing_packets as u64);
 
                 let mut missing_packet_item: Option<&PacketBufferItem> = None;
 
-                for packet_item in packet_buffer.iter().take(INCOMING_PACKET_BUFFER_SIZE).flatten() {
+                for packet_item in packet_buffer
+                    .iter()
+                    .take(INCOMING_PACKET_BUFFER_SIZE)
+                    .flatten()
+                {
                     let packet_age = Instant::now() - packet_item.arrival_time;
                     if packet_age.as_secs() >= retry_interval_for_missing_packets as u64 {
                         if let Some(missing_packets) = &missing_packet_item {
@@ -584,22 +678,38 @@ pub(crate) async fn rx_handler_task(
 
                 if let Some(missing_packet) = missing_packet_item {
                     if missing_packet.packet.message_type() == MessageType::AddBlock as u8 {
-                        if let (Some(sequence), Some(payload_checksum)) = (missing_packet.packet.sequence(), missing_packet.packet.payload_checksum()) {
-                            let mut missing_message = RadioMessage::request_block_part_with(own_node_id, sequence, payload_checksum);
+                        if let (Some(sequence), Some(payload_checksum)) = (
+                            missing_packet.packet.sequence(),
+                            missing_packet.packet.payload_checksum(),
+                        ) {
+                            let mut missing_message = RadioMessage::request_block_part_with(
+                                own_node_id,
+                                sequence,
+                                payload_checksum,
+                            );
                             //collect non missing packet indexes (use the check buffer for that)
                             packet_check_buffer.fill(PACKET_CHECK_BUFFER_EMPTY_VALUE);
 
-                            for packet_item in packet_buffer.iter().take(INCOMING_PACKET_BUFFER_SIZE).flatten() {
-                                if packet_item
-                                    .packet
-                                    .same_message(&missing_packet.packet.data[0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE])
-                                {
-                                    packet_check_buffer[packet_item.packet.packet_index() as usize] = 1_u8;
+                            for packet_item in packet_buffer
+                                .iter()
+                                .take(INCOMING_PACKET_BUFFER_SIZE)
+                                .flatten()
+                            {
+                                if packet_item.packet.same_message(
+                                    &missing_packet.packet.data
+                                        [0..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE],
+                                ) {
+                                    packet_check_buffer
+                                        [packet_item.packet.packet_index() as usize] = 1_u8;
                                 }
                             }
 
                             //add missing packet indexes to the message
-                            for (i, packet_check) in packet_check_buffer.iter().enumerate().take(missing_packet.packet.total_packet_count() as usize) {
+                            for (i, packet_check) in packet_check_buffer
+                                .iter()
+                                .enumerate()
+                                .take(missing_packet.packet.total_packet_count() as usize)
+                            {
                                 if *packet_check == PACKET_CHECK_BUFFER_EMPTY_VALUE {
                                     log!(
                                         Level::Debug,
@@ -610,7 +720,10 @@ pub(crate) async fn rx_handler_task(
                                         sequence,
                                         payload_checksum
                                     );
-                                    if missing_message.add_packet_index_to_request_block_part(i as u8).is_err() {
+                                    if missing_message
+                                        .add_packet_index_to_request_block_part(i as u8)
+                                        .is_err()
+                                    {
                                         log!(
                                             Level::Warn,
                                             "[{}] Failed to add packet index {} to RequestBlockPart message. Maximum indexes reached.",
@@ -696,7 +809,8 @@ fn process_message(
         message.length()
     );
     //crc check, dropping message if it fails
-    if (message.message_type() == MessageType::AddBlock as u8 || message.message_type() == MessageType::AddTransaction as u8)
+    if (message.message_type() == MessageType::AddBlock as u8
+        || message.message_type() == MessageType::AddTransaction as u8)
         && !message.check_payload_checksum()
     {
         if let Some(sequence) = message.sequence() {
@@ -762,7 +876,8 @@ fn process_message(
             message.sequence().unwrap_or(0)
         );
 
-        let result = incoming_message_queue_sender.try_send(IncomingMessageItem::NewMessage(message));
+        let result =
+            incoming_message_queue_sender.try_send(IncomingMessageItem::NewMessage(message));
 
         if let Err(result_error) = result {
             let failed_message = match result_error {
@@ -798,8 +913,13 @@ mod tests {
 
     #[test]
     fn request_echo_routes_only_to_outgoing() {
-        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
-        type InCh = Channel<CriticalSectionRawMutex, crate::IncomingMessageItem, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+        type OutCh =
+            Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<
+            CriticalSectionRawMutex,
+            crate::IncomingMessageItem,
+            { crate::INCOMING_MESSAGE_QUEUE_SIZE },
+        >;
 
         let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
         let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
@@ -821,8 +941,13 @@ mod tests {
 
     #[test]
     fn add_block_routes_to_incoming_when_not_duplicate() {
-        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
-        type InCh = Channel<CriticalSectionRawMutex, crate::IncomingMessageItem, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+        type OutCh =
+            Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<
+            CriticalSectionRawMutex,
+            crate::IncomingMessageItem,
+            { crate::INCOMING_MESSAGE_QUEUE_SIZE },
+        >;
 
         let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
         let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
@@ -840,7 +965,10 @@ mod tests {
         let item = in_rx.try_receive().expect("expected an incoming message");
         let in_msg = match item {
             crate::IncomingMessageItem::NewMessage(m) => m,
-            other => panic!("expected NewMessage, got {:?}", core::mem::discriminant(&other)),
+            other => panic!(
+                "expected NewMessage, got {:?}",
+                core::mem::discriminant(&other)
+            ),
         };
         assert_eq!(in_msg.message_type(), MessageType::AddBlock as u8);
 
@@ -850,8 +978,13 @@ mod tests {
 
     #[test]
     fn duplicate_message_is_not_routed_to_incoming() {
-        type OutCh = Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
-        type InCh = Channel<CriticalSectionRawMutex, crate::IncomingMessageItem, { crate::INCOMING_MESSAGE_QUEUE_SIZE }>;
+        type OutCh =
+            Channel<CriticalSectionRawMutex, RadioMessage, { crate::OUTGOING_MESSAGE_QUEUE_SIZE }>;
+        type InCh = Channel<
+            CriticalSectionRawMutex,
+            crate::IncomingMessageItem,
+            { crate::INCOMING_MESSAGE_QUEUE_SIZE },
+        >;
 
         let outgoing: &'static OutCh = Box::leak(Box::new(Channel::new()));
         let incoming: &'static InCh = Box::leak(Box::new(Channel::new()));
