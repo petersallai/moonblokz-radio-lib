@@ -87,7 +87,11 @@ pub async fn radio_device_task(
     own_node_id: u32,
     _rng_seed: u64,
 ) -> ! {
-    log!(Level::Info, "[{}] Echo radio device task started", own_node_id);
+    log!(
+        Level::Info,
+        "[{}] Echo radio device task started",
+        own_node_id
+    );
     radio_device.run(tx_receiver, rx_sender, own_node_id).await
 }
 
@@ -156,11 +160,23 @@ impl RadioDevice {
     /// If the RX queue is full, the echoed packet is dropped and a warning
     /// is logged showing the message type. This prevents deadlock when the
     /// receiver cannot keep up with transmission rate.
-    async fn run(&mut self, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32) -> ! {
+    async fn run(
+        &mut self,
+        tx_receiver: TxPacketQueueReceiver,
+        rx_sender: RxPacketQueueSender,
+        own_node_id: u32,
+    ) -> ! {
         loop {
             let packet = tx_receiver.receive().await;
-            log::trace!("[{}] Echoing packet: type {}", own_node_id, packet.message_type());
-            match rx_sender.try_send(crate::ReceivedPacket { packet, link_quality: 63 }) {
+            log::trace!(
+                "[{}] Echoing packet: type {}",
+                own_node_id,
+                packet.message_type()
+            );
+            match rx_sender.try_send(crate::ReceivedPacket {
+                packet,
+                link_quality: 63,
+            }) {
                 Ok(_) => {}
                 Err(embassy_sync::channel::TrySendError::Full(received_packet)) => {
                     // Backpressure: drop echoed packet and log

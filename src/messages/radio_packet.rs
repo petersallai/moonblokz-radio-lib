@@ -28,7 +28,10 @@
 //! - **Fixed Size**: All packets are the same size for predictable memory usage
 
 use super::radio_message::MessageType;
-use crate::{RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, RADIO_MULTI_PACKET_PACKET_HEADER_SIZE, RADIO_PACKET_SIZE};
+use crate::{
+    RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE, RADIO_MULTI_PACKET_PACKET_HEADER_SIZE,
+    RADIO_PACKET_SIZE,
+};
 
 /// Low-level packet structure for radio transmission
 ///
@@ -144,7 +147,9 @@ impl RadioPacket {
     /// Total packet count (1 for single-packet messages, >1 for multi-packet)
     pub fn total_packet_count(&self) -> u8 {
         let message_type = self.message_type();
-        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
+        if message_type == MessageType::AddBlock as u8
+            || message_type == MessageType::AddTransaction as u8
+        {
             if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet count
             }
@@ -163,7 +168,9 @@ impl RadioPacket {
     /// Packet index (0-based)
     pub fn packet_index(&self) -> u8 {
         let message_type = self.message_type();
-        if message_type == MessageType::AddBlock as u8 || message_type == MessageType::AddTransaction as u8 {
+        if message_type == MessageType::AddBlock as u8
+            || message_type == MessageType::AddTransaction as u8
+        {
             if self.length < RADIO_MULTI_PACKET_PACKET_HEADER_SIZE {
                 return 0; // Not enough data for packet index
             }
@@ -188,12 +195,17 @@ impl RadioPacket {
             return false;
         }
 
-        if self.message_type() == MessageType::AddBlock as u8 || self.message_type() == MessageType::AddTransaction as u8 {
-            if self.length < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE || other_header.len() < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE {
+        if self.message_type() == MessageType::AddBlock as u8
+            || self.message_type() == MessageType::AddTransaction as u8
+        {
+            if self.length < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+                || other_header.len() < RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
+            {
                 return false;
             }
 
-            self.data[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE] == other_header[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
+            self.data[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
+                == other_header[5..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE]
         } else {
             false
         }

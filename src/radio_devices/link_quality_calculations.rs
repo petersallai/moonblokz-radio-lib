@@ -166,19 +166,35 @@ mod tests {
     fn test_calculate_link_quality() {
         // Test with good signal
         let quality = calculate_link_quality(-70, 5);
-        assert!(quality > 40, "Good signal should have quality > 40, got {}", quality);
+        assert!(
+            quality > 40,
+            "Good signal should have quality > 40, got {}",
+            quality
+        );
 
         // Test with poor signal
         let quality = calculate_link_quality(-110, -15);
-        assert!(quality < 20, "Poor signal should have quality < 20, got {}", quality);
+        assert!(
+            quality < 20,
+            "Poor signal should have quality < 20, got {}",
+            quality
+        );
 
         // Test with perfect signal
         let quality = calculate_link_quality(RSSI_MAX, SNR_MAX);
-        assert_eq!(quality, 63, "Perfect signal should have quality 63, got {}", quality);
+        assert_eq!(
+            quality, 63,
+            "Perfect signal should have quality 63, got {}",
+            quality
+        );
 
         // Test with worst signal
         let quality = calculate_link_quality(RSSI_MIN, SNR_MIN);
-        assert_eq!(quality, 0, "Worst signal should have quality 0, got {}", quality);
+        assert_eq!(
+            quality, 0,
+            "Worst signal should have quality 0, got {}",
+            quality
+        );
 
         // Test SNR weighting (70% SNR vs 30% RSSI)
         let high_snr_low_rssi = calculate_link_quality(RSSI_MIN, SNR_MAX);

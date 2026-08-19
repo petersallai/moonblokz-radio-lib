@@ -52,28 +52,57 @@
 #![allow(async_fn_in_trait)]
 
 #[cfg(any(
-    all(feature = "radio-device-echo", any(feature = "radio-device-rp-lora-sx1262", feature = "radio-device-simulator")),
-    all(feature = "radio-device-rp-lora-sx1262", any(feature = "radio-device-echo", feature = "radio-device-simulator")),
-    all(feature = "radio-device-simulator", any(feature = "radio-device-echo", feature = "radio-device-rp-lora-sx1262")),
+    all(
+        feature = "radio-device-echo",
+        any(
+            feature = "radio-device-rp-lora-sx1262",
+            feature = "radio-device-simulator"
+        )
+    ),
+    all(
+        feature = "radio-device-rp-lora-sx1262",
+        any(feature = "radio-device-echo", feature = "radio-device-simulator")
+    ),
+    all(
+        feature = "radio-device-simulator",
+        any(feature = "radio-device-echo", feature = "radio-device-rp-lora-sx1262")
+    ),
 ))]
 compile_error!("Only one radio implementation feature can be enabled at a time");
 
 #[cfg(any(
-    all(feature = "memory-config-small", any(feature = "memory-config-medium", feature = "memory-config-large")),
-    all(feature = "memory-config-medium", any(feature = "memory-config-small", feature = "memory-config-large")),
-    all(feature = "memory-config-large", any(feature = "memory-config-small", feature = "memory-config-medium")),
+    all(
+        feature = "memory-config-small",
+        any(feature = "memory-config-medium", feature = "memory-config-large")
+    ),
+    all(
+        feature = "memory-config-medium",
+        any(feature = "memory-config-small", feature = "memory-config-large")
+    ),
+    all(
+        feature = "memory-config-large",
+        any(feature = "memory-config-small", feature = "memory-config-medium")
+    ),
 ))]
 compile_error!("Only one memory configuration feature can be enabled at a time");
 
 #[cfg(all(
     not(test),
-    not(any(feature = "radio-device-echo", feature = "radio-device-rp-lora-sx1262", feature = "radio-device-simulator"))
+    not(any(
+        feature = "radio-device-echo",
+        feature = "radio-device-rp-lora-sx1262",
+        feature = "radio-device-simulator"
+    ))
 ))]
 compile_error!("At least one radio implementation feature must be enabled");
 
 #[cfg(all(
     not(test),
-    not(any(feature = "memory-config-small", feature = "memory-config-medium", feature = "memory-config-large"))
+    not(any(
+        feature = "memory-config-small",
+        feature = "memory-config-medium",
+        feature = "memory-config-large"
+    ))
 ))]
 compile_error!("At least one memory configuration feature must be enabled");
 
@@ -99,7 +128,9 @@ use rand_core::SeedableRng;
 use rand_wyrand::WyRand;
 
 // Re-export types from messages module
-pub use messages::{EchoResultItem, EchoResultIterator, MessageError, MessageType, RadioMessage, RadioPacket};
+pub use messages::{
+    EchoResultItem, EchoResultIterator, MessageError, MessageType, RadioMessage, RadioPacket,
+};
 
 // Re-export link quality utilities from radio devices module
 pub use radio_devices::{calculate_link_quality, normalize};
@@ -204,11 +235,15 @@ const RADIO_MULTI_PACKET_PACKET_HEADER_SIZE: usize = 15;
 ///
 /// Calculated via ceiling division to ensure we can accommodate RADIO_MAX_MESSAGE_SIZE.
 /// **Compatibility critical**: Derived from RADIO_PACKET_SIZE and RADIO_MAX_MESSAGE_SIZE.
-pub const RADIO_MAX_PACKET_COUNT: usize =
-    (RADIO_MAX_MESSAGE_SIZE - RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE).div_ceil(RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE);
+pub const RADIO_MAX_PACKET_COUNT: usize = (RADIO_MAX_MESSAGE_SIZE
+    - RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE)
+    .div_ceil(RADIO_PACKET_SIZE - RADIO_MULTI_PACKET_PACKET_HEADER_SIZE);
 
 /// Compile-time assertion that packet count fits in a u8
-const _: () = assert!(RADIO_MAX_PACKET_COUNT <= 255, "RADIO_MAX_PACKET_COUNT must fit in a u8");
+const _: () = assert!(
+    RADIO_MAX_PACKET_COUNT <= 255,
+    "RADIO_MAX_PACKET_COUNT must fit in a u8"
+);
 
 /// Configuration for radio transmission timing and network behavior
 ///
@@ -388,13 +423,27 @@ const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 3;
 const OUTGOING_MESSAGE_QUEUE_SIZE: usize = 8;
 
 /// Type alias for the outgoing message channel
-type OutgoingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
+type OutgoingMessageQueue = embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    RadioMessage,
+    OUTGOING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Type alias for the receiver end of the outgoing message channel
-type OutgoingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
+type OutgoingMessageQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    RadioMessage,
+    OUTGOING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Type alias for the sender end of the outgoing message channel
-type OutgoingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioMessage, OUTGOING_MESSAGE_QUEUE_SIZE>;
+type OutgoingMessageQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    RadioMessage,
+    OUTGOING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Static allocation of outgoing message queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -412,13 +461,27 @@ const INCOMING_MESSAGE_QUEUE_SIZE: usize = 3;
 const INCOMING_MESSAGE_QUEUE_SIZE: usize = 10;
 
 /// Type alias for the incoming message channel
-type IncomingMessageQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueue = embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    IncomingMessageItem,
+    INCOMING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Type alias for the sender end of the incoming message channel
-type IncomingMessageQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    IncomingMessageItem,
+    INCOMING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Type alias for the receiver end of the incoming message channel
-type IncomingMessageQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, IncomingMessageItem, INCOMING_MESSAGE_QUEUE_SIZE>;
+type IncomingMessageQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    IncomingMessageItem,
+    INCOMING_MESSAGE_QUEUE_SIZE,
+>;
 
 /// Static allocation of incoming message queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -440,13 +503,24 @@ const TX_PACKET_QUEUE_SIZE: usize = 32;
 const TX_PACKET_QUEUE_SIZE: usize = 64;
 
 /// Type alias for the TX packet channel
-type TXPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
+type TXPacketQueue =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
 
 /// Type alias for the receiver end of the TX packet channel
-type TxPacketQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
+type TxPacketQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    RadioPacket,
+    TX_PACKET_QUEUE_SIZE,
+>;
 
 /// Type alias for the sender end of the TX packet channel
-type TxPacketQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioPacket, TX_PACKET_QUEUE_SIZE>;
+type TxPacketQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    RadioPacket,
+    TX_PACKET_QUEUE_SIZE,
+>;
 
 /// Static allocation of TX packet queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -467,13 +541,24 @@ const RX_PACKET_QUEUE_SIZE: usize = 3;
 const RX_PACKET_QUEUE_SIZE: usize = 5;
 
 /// Type alias for the RX packet channel
-type RxPacketQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
+type RxPacketQueue =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
 
 /// Type alias for the receiver end of the RX packet channel
-type RxPacketQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
+type RxPacketQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    ReceivedPacket,
+    RX_PACKET_QUEUE_SIZE,
+>;
 
 /// Type alias for the sender end of the RX packet channel
-type RxPacketQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, ReceivedPacket, RX_PACKET_QUEUE_SIZE>;
+type RxPacketQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    ReceivedPacket,
+    RX_PACKET_QUEUE_SIZE,
+>;
 
 /// Static allocation of RX packet queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -486,13 +571,16 @@ static RX_PACKET_QUEUE: RxPacketQueue = Channel::new();
 const RX_STATE_QUEUE_SIZE: usize = 20;
 
 /// Type alias for the RX state channel
-type RxStateQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
+type RxStateQueue =
+    embassy_sync::channel::Channel<CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
 
 /// Type alias for the receiver end of the RX state channel
-type RxStateQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
+type RxStateQueueReceiver =
+    embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
 
 /// Type alias for the sender end of the RX state channel
-type RxStateQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
+type RxStateQueueSender =
+    embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RxState, RX_STATE_QUEUE_SIZE>;
 
 /// Static allocation of RX state queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -513,13 +601,27 @@ const PROCESS_RESULT_QUEUE_SIZE: usize = 5;
 const PROCESS_RESULT_QUEUE_SIZE: usize = 10;
 
 /// Type alias for the processing result channel
-type ProcessResultQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueue = embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    MessageProcessingResult,
+    PROCESS_RESULT_QUEUE_SIZE,
+>;
 
 /// Type alias for the sender end of the processing result channel
-type ProcessResultQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    MessageProcessingResult,
+    PROCESS_RESULT_QUEUE_SIZE,
+>;
 
 /// Type alias for the receiver end of the processing result channel
-type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, MessageProcessingResult, PROCESS_RESULT_QUEUE_SIZE>;
+type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    MessageProcessingResult,
+    PROCESS_RESULT_QUEUE_SIZE,
+>;
 
 /// Static allocation of processing result queue for embedded targets
 #[cfg(feature = "embedded")]
@@ -592,7 +694,12 @@ impl ScoringMatrix {
     /// * `poor_limit` - Threshold for poor connection quality (0-63)
     /// * `excellent_limit` - Threshold for excellent connection quality (0-63)
     /// * `relay_score_limit` - Minimum score to relay (0-15)
-    pub const fn new(matrix: [[u8; 4]; 4], poor_limit: u8, excellent_limit: u8, relay_score_limit: u8) -> Self {
+    pub const fn new(
+        matrix: [[u8; 4]; 4],
+        poor_limit: u8,
+        excellent_limit: u8,
+        relay_score_limit: u8,
+    ) -> Self {
         Self {
             matrix,
             poor_limit,
@@ -909,22 +1016,27 @@ impl RadioCommunicationManager {
         rng_seed: u64,
     ) -> Result<(), RadioInitError> {
         let outgoing_message_queue_temp: OutgoingMessageQueue = Channel::new();
-        let outgoing_message_queue_static: &'static OutgoingMessageQueue = Box::leak(Box::new(outgoing_message_queue_temp));
+        let outgoing_message_queue_static: &'static OutgoingMessageQueue =
+            Box::leak(Box::new(outgoing_message_queue_temp));
 
         let incoming_message_queue_temp: IncomingMessageQueue = Channel::new();
-        let incoming_message_queue_static: &'static IncomingMessageQueue = Box::leak(Box::new(incoming_message_queue_temp));
+        let incoming_message_queue_static: &'static IncomingMessageQueue =
+            Box::leak(Box::new(incoming_message_queue_temp));
 
         let tx_packet_queue_temp: TXPacketQueue = Channel::new();
-        let tx_packet_queue_static: &'static TXPacketQueue = Box::leak(Box::new(tx_packet_queue_temp));
+        let tx_packet_queue_static: &'static TXPacketQueue =
+            Box::leak(Box::new(tx_packet_queue_temp));
 
         let rx_packet_queue_temp: RxPacketQueue = Channel::new();
-        let rx_packet_queue_static: &'static RxPacketQueue = Box::leak(Box::new(rx_packet_queue_temp));
+        let rx_packet_queue_static: &'static RxPacketQueue =
+            Box::leak(Box::new(rx_packet_queue_temp));
 
         let rx_state_queue_temp: RxStateQueue = Channel::new();
         let rx_state_queue_static: &'static RxStateQueue = Box::leak(Box::new(rx_state_queue_temp));
 
         let process_result_queue_temp: ProcessResultQueue = Channel::new();
-        let process_result_queue_static: &'static ProcessResultQueue = Box::leak(Box::new(process_result_queue_temp));
+        let process_result_queue_static: &'static ProcessResultQueue =
+            Box::leak(Box::new(process_result_queue_temp));
         self.initialize_common(
             radio_config,
             spawner,
@@ -1017,7 +1129,11 @@ impl RadioCommunicationManager {
         if radion_device_task_result.is_err() {
             return Err(RadioInitError::RadioDeviceTaskInitError);
         }
-        log!(log::Level::Debug, "[{}] Radio device task spawned", own_node_id);
+        log!(
+            log::Level::Debug,
+            "[{}] Radio device task spawned",
+            own_node_id
+        );
 
         let tx_scheduler_task_result = spawner.spawn(tx_scheduler_task(
             outgoing_message_queue.receiver(),
@@ -1032,7 +1148,11 @@ impl RadioCommunicationManager {
         if tx_scheduler_task_result.is_err() {
             return Err(RadioInitError::TxTaskInitError);
         }
-        log!(log::Level::Debug, "[{}] TX Scheduler task spawned", own_node_id);
+        log!(
+            log::Level::Debug,
+            "[{}] TX Scheduler task spawned",
+            own_node_id
+        );
 
         let rx_handler_task_result = spawner.spawn(rx_handler::rx_handler_task(
             incoming_message_queue.sender(),
@@ -1052,8 +1172,16 @@ impl RadioCommunicationManager {
         if rx_handler_task_result.is_err() {
             return Err(RadioInitError::RxTaskInitError);
         }
-        log!(log::Level::Debug, "[{}] RX Handler task spawned", own_node_id);
-        log!(log::Level::Info, "[{}] Radio communication initialized", own_node_id);
+        log!(
+            log::Level::Debug,
+            "[{}] RX Handler task spawned",
+            own_node_id
+        );
+        log!(
+            log::Level::Info,
+            "[{}] Radio communication initialized",
+            own_node_id
+        );
 
         self.state = RadioCommunicationManagerState::Initialized {
             outgoing_message_queue_sender: outgoing_message_queue.sender(),
@@ -1088,7 +1216,8 @@ impl RadioCommunicationManager {
                 return Err(SendMessageError::NotInited);
             }
             RadioCommunicationManagerState::Initialized {
-                outgoing_message_queue_sender, ..
+                outgoing_message_queue_sender,
+                ..
             } => outgoing_message_queue_sender,
         };
         outgoing_message_queue_sender.try_send(message)?;
@@ -1168,13 +1297,17 @@ impl RadioCommunicationManager {
     ///     // ...
     /// }
     /// ```
-    pub fn report_message_processing_status(&self, message_processing_result: MessageProcessingResult) -> Result<(), SendMessageError> {
+    pub fn report_message_processing_status(
+        &self,
+        message_processing_result: MessageProcessingResult,
+    ) -> Result<(), SendMessageError> {
         let process_result_queue_sender = match &self.state {
             RadioCommunicationManagerState::Uninitialized => {
                 return Err(SendMessageError::NotInited);
             }
             RadioCommunicationManagerState::Initialized {
-                process_result_queue_sender, ..
+                process_result_queue_sender,
+                ..
             } => process_result_queue_sender,
         };
         process_result_queue_sender.try_send(message_processing_result)?;
@@ -1208,7 +1341,10 @@ mod tests {
         let msg = RadioMessage::request_echo_with(123);
         match mgr.send_message(msg) {
             Err(SendMessageError::NotInited) => {}
-            other => panic!("Expected NotInited, got: {:?}", core::mem::discriminant(&other)),
+            other => panic!(
+                "Expected NotInited, got: {:?}",
+                core::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -1218,7 +1354,10 @@ mod tests {
         let res = block_on(async { mgr.receive_message().await });
         match res {
             Err(ReceiveMessageError::NotInited) => {}
-            other => panic!("Expected NotInited, got: {:?}", core::mem::discriminant(&other)),
+            other => panic!(
+                "Expected NotInited, got: {:?}",
+                core::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -1270,7 +1409,12 @@ mod tests {
 
     #[test]
     fn test_scoring_matrix_creation() {
-        let matrix = ScoringMatrix::new([[0, 15, 15, 15], [0, 0, 3, 4], [0, 0, 0, 1], [0, 0, 0, 0]], 20, 40, 15);
+        let matrix = ScoringMatrix::new(
+            [[0, 15, 15, 15], [0, 0, 3, 4], [0, 0, 0, 1], [0, 0, 0, 0]],
+            20,
+            40,
+            15,
+        );
 
         assert_eq!(matrix.poor_limit, 20);
         assert_eq!(matrix.excellent_limit, 40);
@@ -1427,7 +1571,10 @@ mod tests {
 
         // Verify Display implementation
         assert_eq!(format!("{}", send_err1), "outgoing message queue is full");
-        assert_eq!(format!("{}", send_err2), "RadioCommunicationManager not initialized");
+        assert_eq!(
+            format!("{}", send_err2),
+            "RadioCommunicationManager not initialized"
+        );
 
         // Verify std::error::Error trait is implemented
         let _: &dyn std::error::Error = &send_err1;
@@ -1435,7 +1582,10 @@ mod tests {
 
         // Test ReceiveMessageError
         let recv_err = ReceiveMessageError::NotInited;
-        assert_eq!(format!("{}", recv_err), "RadioCommunicationManager not initialized");
+        assert_eq!(
+            format!("{}", recv_err),
+            "RadioCommunicationManager not initialized"
+        );
         let _: &dyn std::error::Error = &recv_err;
 
         // Test RadioInitError
@@ -1444,8 +1594,14 @@ mod tests {
         let init_err3 = RadioInitError::RxTaskInitError;
 
         // Verify Display implementation
-        assert_eq!(format!("{}", init_err1), "failed to spawn radio device task");
-        assert_eq!(format!("{}", init_err2), "failed to spawn TX scheduler task");
+        assert_eq!(
+            format!("{}", init_err1),
+            "failed to spawn radio device task"
+        );
+        assert_eq!(
+            format!("{}", init_err2),
+            "failed to spawn TX scheduler task"
+        );
         assert_eq!(format!("{}", init_err3), "failed to spawn RX handler task");
 
         // Verify std::error::Error trait is implemented

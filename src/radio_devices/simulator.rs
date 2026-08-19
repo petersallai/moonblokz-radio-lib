@@ -79,17 +79,31 @@ const RADIO_OUTPUT_QUEUE_SIZE: usize = 10;
 ///
 /// Channel for sending messages from the simulated radio to the network simulator.
 /// Uses critical section mutex for thread-safe access.
-pub type RadioOutputQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioOutputMessage, RADIO_OUTPUT_QUEUE_SIZE>;
+pub type RadioOutputQueue = embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    RadioOutputMessage,
+    RADIO_OUTPUT_QUEUE_SIZE,
+>;
 
 /// Radio output queue receiver type
 ///
 /// Used by the network simulator to receive outgoing radio messages.
-pub type RadioOutputQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioOutputMessage, RADIO_OUTPUT_QUEUE_SIZE>;
+pub type RadioOutputQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    RadioOutputMessage,
+    RADIO_OUTPUT_QUEUE_SIZE,
+>;
 
 /// Radio output queue sender type
 ///
 /// Used by the radio device to send messages to the network simulator.
-pub type RadioOutputQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioOutputMessage, RADIO_OUTPUT_QUEUE_SIZE>;
+pub type RadioOutputQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    RadioOutputMessage,
+    RADIO_OUTPUT_QUEUE_SIZE,
+>;
 
 /// Size of the radio input message queue
 ///
@@ -101,17 +115,31 @@ const RADIO_INPUT_QUEUE_SIZE: usize = 10;
 ///
 /// Channel for receiving messages from the network simulator to the simulated radio.
 /// Uses critical section mutex for thread-safe access.
-pub type RadioInputQueue = embassy_sync::channel::Channel<CriticalSectionRawMutex, RadioInputMessage, RADIO_INPUT_QUEUE_SIZE>;
+pub type RadioInputQueue = embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    RadioInputMessage,
+    RADIO_INPUT_QUEUE_SIZE,
+>;
 
 /// Radio input queue receiver type
 ///
 /// Used by the radio device to receive messages from the network simulator.
-pub type RadioInputQueueReceiver = embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, RadioInputMessage, RADIO_INPUT_QUEUE_SIZE>;
+pub type RadioInputQueueReceiver = embassy_sync::channel::Receiver<
+    'static,
+    CriticalSectionRawMutex,
+    RadioInputMessage,
+    RADIO_INPUT_QUEUE_SIZE,
+>;
 
 /// Radio input queue sender type
 ///
 /// Used by the network simulator to send messages to the radio device.
-pub type RadioInputQueueSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, RadioInputMessage, RADIO_INPUT_QUEUE_SIZE>;
+pub type RadioInputQueueSender = embassy_sync::channel::Sender<
+    'static,
+    CriticalSectionRawMutex,
+    RadioInputMessage,
+    RADIO_INPUT_QUEUE_SIZE,
+>;
 
 /// Messages sent from simulated radio to network simulator
 ///
@@ -174,25 +202,47 @@ pub enum RadioInputMessage {
 /// - Input queue: receives CADResponse and ReceivePacket from simulator
 /// - Simulator is responsible for implementing network topology and packet routing
 #[embassy_executor::task(pool_size = MAX_NODE_COUNT)]
-pub async fn radio_device_task(radio_device: RadioDevice, tx_receiver: TxPacketQueueReceiver, rx_sender: RxPacketQueueSender, own_node_id: u32, rng_seed: u64) {
-    log!(Level::Info, "[{}] Simulated radio device task started", own_node_id);
+pub async fn radio_device_task(
+    radio_device: RadioDevice,
+    tx_receiver: TxPacketQueueReceiver,
+    rx_sender: RxPacketQueueSender,
+    own_node_id: u32,
+    rng_seed: u64,
+) {
+    log!(
+        Level::Info,
+        "[{}] Simulated radio device task started",
+        own_node_id
+    );
     let mut rng = WyRand::seed_from_u64(rng_seed);
     loop {
         let mut next_cad = true;
-        match select(radio_device.input_queue_receiver.receive(), tx_receiver.receive()).await {
+        match select(
+            radio_device.input_queue_receiver.receive(),
+            tx_receiver.receive(),
+        )
+        .await
+        {
             Either::First(message) => match message {
                 RadioInputMessage::ReceivePacket(pkt) => {
                     log!(Level::Trace, "[{}] Received packet: {:?}", own_node_id, pkt);
                     rx_sender.send(pkt).await;
                 }
                 RadioInputMessage::CADResponse(_busy) => {
-                    log!(Level::Warn, "[{}] Not waiting for CAD response. Dropping.", own_node_id);
+                    log!(
+                        Level::Warn,
+                        "[{}] Not waiting for CAD response. Dropping.",
+                        own_node_id
+                    );
                 }
             },
             Either::Second(packet) => loop {
                 log!(Level::Trace, "[{}] Requesting CAD", own_node_id);
                 if next_cad {
-                    radio_device.output_queue_sender.send(RadioOutputMessage::RequestCAD).await;
+                    radio_device
+                        .output_queue_sender
+                        .send(RadioOutputMessage::RequestCAD)
+                        .await;
                 }
 
                 match radio_device.input_queue_receiver.receive().await {
@@ -202,17 +252,31 @@ pub async fn radio_device_task(radio_device: RadioDevice, tx_receiver: TxPacketQ
                         next_cad = false;
                     }
                     RadioInputMessage::CADResponse(busy) => {
-                        log!(Level::Trace, "[{}] Received CAD response: busy={}", own_node_id, busy);
+                        log!(
+                            Level::Trace,
+                            "[{}] Received CAD response: busy={}",
+                            own_node_id,
+                            busy
+                        );
                         next_cad = true;
                         if busy {
                             Timer::after(embassy_time::Duration::from_millis(
-                                CAD_MINIMAL_WAIT_TIME + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
+                                CAD_MINIMAL_WAIT_TIME
+                                    + rng.next_u64() % CAD_MAX_ADDITIONAL_WAIT_TIME,
                             ))
                             .await;
                             continue;
                         } else {
-                            log!(Level::Trace, "[{}] Channel clear, sending packet: {:?}", own_node_id, packet);
-                            radio_device.output_queue_sender.send(RadioOutputMessage::SendPacket(packet)).await;
+                            log!(
+                                Level::Trace,
+                                "[{}] Channel clear, sending packet: {:?}",
+                                own_node_id,
+                                packet
+                            );
+                            radio_device
+                                .output_queue_sender
+                                .send(RadioOutputMessage::SendPacket(packet))
+                                .await;
                             break;
                         }
                     }
@@ -277,7 +341,10 @@ impl RadioDevice {
     ///     INPUT_QUEUE.receiver()
     /// );
     /// ```
-    pub const fn with(output_queue_sender: RadioOutputQueueSender, input_queue_receiver: RadioInputQueueReceiver) -> Self {
+    pub const fn with(
+        output_queue_sender: RadioOutputQueueSender,
+        input_queue_receiver: RadioInputQueueReceiver,
+    ) -> Self {
         RadioDevice {
             output_queue_sender,
             input_queue_receiver,
