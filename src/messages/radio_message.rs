@@ -295,11 +295,16 @@ pub enum MessageType {
 /// ```rust
 /// use moonblokz_radio_lib::RadioMessage;
 ///
-/// // Create an echo request
-/// let message = RadioMessage::request_echo_with(42);
-/// assert_eq!(message.message_type(), 0x01);
+/// // Ask a neighbour for a whole block
+/// let message = RadioMessage::request_full_block_with(42, 7);
+/// assert_eq!(message.message_type(), 0x04);
 /// assert_eq!(message.sender_node_id(), 42);
+/// assert_eq!(message.sequence(), Some(7));
 /// ```
+///
+/// The echo, block-part and mempool-iteration constructors are `pub(crate)`:
+/// those messages are produced by the radio manager itself, not by the node
+/// application, so their examples are marked `ignore` rather than run.
 #[derive(Clone)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct RadioMessage {
@@ -507,9 +512,9 @@ impl RadioMessage {
     /// A RadioMessage configured as a RequestEcho
     ///
     /// # Example
-    /// ```rust
-    /// use moonblokz_radio_lib::RadioMessage;
-    ///
+    /// Crate-internal: echo requests are emitted by the radio manager, so this
+    /// constructor is not reachable from a doc test.
+    /// ```rust,ignore
     /// let echo_request = RadioMessage::request_echo_with(42);
     /// assert_eq!(echo_request.sender_node_id(), 42);
     /// ```
