@@ -252,7 +252,7 @@ const _: () = assert!(
 ///
 /// # Example
 /// ```rust
-/// use moonblokz_radio_lib::{RadioConfiguration, ScoringMatrix};
+/// use moonblokz_radio_lib::{RadioConfiguration, SCORING_MATRIX_DEFAULT, ScoringMatrix};
 ///
 /// let config = RadioConfiguration {
 ///     delay_between_tx_packets: 200,      // 200 milliseconds between packets
@@ -261,7 +261,7 @@ const _: () = assert!(
 ///     echo_messages_target_interval: 100,   // Target 100 seconds between echo messages by ourselves or neighbors
 ///     echo_gathering_timeout: 10,           // Wait 10 minutes for echo responses
 ///     relay_position_delay: 10,             // 10 second delay for relaying by calculated position
-///     scoring_matrix: ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]), // Example scoring matrix in compressed form
+///     scoring_matrix: ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT), // The recommended matrix, in compressed form
 ///     retry_interval_for_missing_packets: 60, // Retry missing packets after 60 seconds
 ///    tx_maximum_random_delay: 200,        // Up to 200ms random delay
 /// };
@@ -627,6 +627,30 @@ type ProcessResultQueueReceiver = embassy_sync::channel::Receiver<
 #[cfg(feature = "embedded")]
 static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 
+/// Byte length of the compact encoded form of a [`ScoringMatrix`]
+///
+/// Forty bits exactly: six 4-bit upper-triangle cells, `poor_limit` in six bits,
+/// `excellent_limit` in six split across two bytes, and `relay_score_limit` in four.
+/// [`ScoringMatrix::new_from_encoded`] defines the layout and is its authority.
+///
+/// **Compatibility critical**: this is also the declared width of chain-configuration
+/// parameter 17 (`scoring_matrix`), which is permanent wire format once a chain exists
+/// (Configuration Module Specification §4.2). The configuration module declares the
+/// width independently because it cannot depend on this crate; the node runtime's
+/// snapshot code is where the two array types meet, so a disagreement is a compile
+/// error there rather than a silent misread.
+pub const SCORING_MATRIX_ENCODED_LEN: usize = 5;
+
+/// The encoded [`ScoringMatrix`] this crate recommends
+///
+/// **Compatibility critical**: these are the same bytes chain-configuration parameter
+/// 17 carries as its code-baked default, and that default may never change once a
+/// chain exists (Configuration Module Specification §4.5 rule 3). Re-tuning the
+/// recommendation is therefore a recommendation for *future* chains, not a correction
+/// of this constant. `test_scoring_matrix_default_values_encoding` pins these bytes
+/// to the semantics they are documented to have.
+pub const SCORING_MATRIX_DEFAULT: [u8; SCORING_MATRIX_ENCODED_LEN] = [255, 243, 65, 82, 143];
+
 /// Scoring matrix for relay decisions based on connection quality
 ///
 /// This matrix encodes rules for deciding whether a node should relay a message
@@ -645,10 +669,10 @@ static PROCESS_RESULT_QUEUE: ProcessResultQueue = Channel::new();
 ///
 /// # Example
 /// ```rust
-/// use moonblokz_radio_lib::ScoringMatrix;
+/// use moonblokz_radio_lib::{SCORING_MATRIX_DEFAULT, ScoringMatrix};
 ///
-/// // Create matrix with encoded values
-/// let matrix = ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]);
+/// // Create matrix from the recommended encoded values
+/// let matrix = ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT);
 ///
 /// // Or create directly
 /// let matrix = ScoringMatrix::new(
@@ -708,7 +732,7 @@ impl ScoringMatrix {
         }
     }
 
-    /// Creates a ScoringMatrix from a compact 5-byte encoded representation
+    /// Creates a ScoringMatrix from its compact encoded representation
     ///
     /// The encoding uses only the upper triangle of the matrix (6 cells) since
     /// the lower triangle is unused in relay scoring. Limits are bit-packed
@@ -726,20 +750,26 @@ impl ScoringMatrix {
     /// Where `B1 = matrix[0][1]`, `C1 = matrix[0][2]`, `D1 = matrix[0][3]`,
     /// `C2 = matrix[1][2]`, `D2 = matrix[1][3]`, `D3 = matrix[2][3]`
     ///
+    /// **The layout is permanent.** These bytes travel in chain configuration
+    /// (parameter 17), so every node of a chain has agreed what they mean.
+    /// Changing the packing would make the same five bytes decode to a different
+    /// matrix on a newer build, with no error on either side; it requires a new
+    /// chain-configuration identifier rather than a new layout under the old one
+    /// (Configuration Module Specification §4.2, §4.5 rule 2).
+    ///
     /// # Arguments
-    /// * `encoded` - 5-byte array containing the packed matrix and limits
+    /// * `encoded` - [`SCORING_MATRIX_ENCODED_LEN`] bytes holding the packed matrix and limits
     ///
     /// # Example
     /// ```rust
-    /// use moonblokz_radio_lib::ScoringMatrix;
+    /// use moonblokz_radio_lib::{SCORING_MATRIX_DEFAULT, ScoringMatrix};
     ///
-    /// // Default recommended values
-    /// let matrix = ScoringMatrix::new_from_encoded(&[255, 243, 65, 82, 143]);
+    /// let matrix = ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT);
     /// assert_eq!(matrix.poor_limit, 20);
     /// assert_eq!(matrix.excellent_limit, 40);
     /// assert_eq!(matrix.relay_score_limit, 15);
     /// ```
-    pub const fn new_from_encoded(encoded: &[u8; 5]) -> Self {
+    pub const fn new_from_encoded(encoded: &[u8; SCORING_MATRIX_ENCODED_LEN]) -> Self {
         let mut matrix = [[0; 4]; 4];
 
         matrix[0][1] = (encoded[0] >> 4) & 0x0F;
@@ -1329,7 +1359,7 @@ mod tests {
             echo_messages_target_interval: 100,
             echo_gathering_timeout: 10,
             relay_position_delay: 10,
-            scoring_matrix: ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 82u8, 143u8]),
+            scoring_matrix: ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT),
             retry_interval_for_missing_packets: 60,
             tx_maximum_random_delay: 200,
         };
@@ -1390,8 +1420,12 @@ mod tests {
 
     #[test]
     fn test_scoring_matrix_default_values_encoding() {
-        let encoded_value = [255u8, 243u8, 65u8, 82u8, 143u8];
-        let sm = ScoringMatrix::new_from_encoded(&encoded_value);
+        // These bytes are also chain-configuration parameter 17's code-baked
+        // default, which may never change once a chain exists. Asserting the
+        // decoded semantics here is what makes a change to the packing fail
+        // loudly, instead of silently giving every existing chain's five bytes a
+        // new interpretation on a newer build.
+        let sm = ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT);
         assert_eq!(sm.poor_limit, 20);
         assert_eq!(sm.excellent_limit, 40);
         assert_eq!(sm.relay_score_limit, 15);
@@ -1425,7 +1459,7 @@ mod tests {
 
     #[test]
     fn test_scoring_matrix_symmetry() {
-        let matrix = ScoringMatrix::new_from_encoded(&[255u8, 243u8, 65u8, 82u8, 143u8]);
+        let matrix = ScoringMatrix::new_from_encoded(&SCORING_MATRIX_DEFAULT);
 
         // Lower triangle should be 0 by convention
         assert_eq!(matrix.matrix[1][0], 0);
