@@ -711,8 +711,15 @@ mod tests {
         let mut pool = pool();
         let none = [0; crate::CONNECTION_MATRIX_SIZE];
         add(&mut pool, support(5, 3), &none);
-        add(&mut pool, support(6, 3), &none);
+        let mut heard = [0; crate::CONNECTION_MATRIX_SIZE];
+        heard[1] = 30;
+        add(&mut pool, support(6, 3), &heard);
         assert_eq!(pooled(&pool), 1);
+        assert_eq!(
+            item_of(&pool, &support(5, 3)).message_connections[1],
+            30,
+            "the second copy updated the item"
+        );
     }
 
     #[test]
