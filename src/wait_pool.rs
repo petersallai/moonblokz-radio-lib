@@ -40,7 +40,7 @@ use rand_core::{RngCore, SeedableRng};
 use rand_wyrand::WyRand;
 
 use crate::relay_manager::{ConnectionMatrix, ConnectionMatrixRow};
-use crate::{RadioMessage, ScoringMatrix};
+use crate::{MessageType, RadioMessage, ScoringMatrix};
 
 use crate::relay_manager::QUALITY_MASK;
 
@@ -330,7 +330,10 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize>
     ///
     /// # Arguments
     ///
-    /// * `message` - The message to update
+    /// * `message_type`, `sequence`, `payload_checksum` - The identity of the message to update
+    /// * `message` - The full message, when the caller has it. A `Support` has no payload
+    ///   checksum, so it matches only an identical message (`PartialEq`, which ignores the
+    ///   relay sender); without the full message no `Support` item matches
     /// * `connection_matrix` - Full network topology
     /// * `own_connections` - This node's connection quality to all nodes
     /// * `sender_connections` - New sender's connection quality to all nodes
@@ -338,11 +341,15 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize>
     /// # Returns
     ///
     /// `true` if the message was found and updated, `false` if not found
+    // The packet path has only the identity triple, the message paths also the message (a
+    // `Support` matches by full equality), so both stay separate parameters.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_message(
         &mut self,
         message_type: u8,
         sequence: u32,
         payload_checksum: Option<u32>,
+        message: Option<&RadioMessage>,
         connection_matrix: &ConnectionMatrix,
         own_connections: &ConnectionMatrixRow,
         sender_connections: &ConnectionMatrixRow,
@@ -357,6 +364,13 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize>
                             if item_payload_checksum != payload_checksum {
                                 continue;
                             }
+                        }
+                        // Two supports for the same sequence from different supporters or
+                        // proposers are different messages: match only an identical one.
+                        if message_type == MessageType::Support as u8
+                            && !message.is_some_and(|m| item.message == *m)
+                        {
+                            continue;
                         }
                         for (message_conn, sender_conn) in item
                             .message_connections
@@ -464,6 +478,7 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize>
                 message.message_type(),
                 sequence,
                 message.payload_checksum(),
+                Some(&message),
                 connection_matrix,
                 own_connections,
                 sender_connections,
@@ -637,5 +652,112 @@ impl<const WAIT_POOL_SIZE: usize, const CONNECTION_MATRIX_SIZE: usize>
                 item.message_connections[index] = 0;
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    type Pool = WaitPool<4, { crate::CONNECTION_MATRIX_SIZE }>;
+
+    fn pool() -> Pool {
+        // Uniform weights and a zero relay limit: every item scores above zero and is kept.
+        WaitPool::with(1, ScoringMatrix::new([[1, 1, 1, 1]; 4], 16, 48, 0), 1, 42)
+    }
+
+    fn support(sender: u32, supporter: u32) -> RadioMessage {
+        RadioMessage::support_with(sender, 110, supporter, 9, &[0x11; 32], &[0x22; 64]).unwrap()
+    }
+
+    fn add(pool: &mut Pool, message: RadioMessage, sender_connections: &ConnectionMatrixRow) {
+        let matrix: ConnectionMatrix =
+            [[0; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+        pool.add_or_update_message(
+            message,
+            &matrix,
+            &[0; crate::CONNECTION_MATRIX_SIZE],
+            sender_connections,
+            None,
+        );
+    }
+
+    fn pooled(pool: &Pool) -> usize {
+        pool.items.iter().flatten().count()
+    }
+
+    fn item_of<'a>(
+        pool: &'a Pool,
+        message: &RadioMessage,
+    ) -> &'a WaitPoolItem<{ crate::CONNECTION_MATRIX_SIZE }> {
+        pool.items
+            .iter()
+            .flatten()
+            .find(|i| i.message == *message)
+            .unwrap()
+    }
+
+    #[test]
+    fn supports_from_different_supporters_for_one_sequence_are_pooled_apart() {
+        let mut pool = pool();
+        let none = [0; crate::CONNECTION_MATRIX_SIZE];
+        add(&mut pool, support(5, 3), &none);
+        add(&mut pool, support(5, 4), &none);
+        assert_eq!(pooled(&pool), 2);
+    }
+
+    #[test]
+    fn an_identical_support_from_another_relay_updates_its_item() {
+        let mut pool = pool();
+        let none = [0; crate::CONNECTION_MATRIX_SIZE];
+        add(&mut pool, support(5, 3), &none);
+        add(&mut pool, support(6, 3), &none);
+        assert_eq!(pooled(&pool), 1);
+    }
+
+    #[test]
+    fn a_support_update_credits_the_matching_item() {
+        let mut pool = pool();
+        let none = [0; crate::CONNECTION_MATRIX_SIZE];
+        let first = support(5, 3);
+        let second = support(5, 4);
+        add(&mut pool, support(5, 3), &none);
+        add(&mut pool, support(5, 4), &none);
+        let mut heard = [0; crate::CONNECTION_MATRIX_SIZE];
+        heard[1] = 30;
+        let matrix: ConnectionMatrix =
+            [[0; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+        assert!(pool.update_message(
+            MessageType::Support as u8,
+            110,
+            None,
+            Some(&second),
+            &matrix,
+            &[0; crate::CONNECTION_MATRIX_SIZE],
+            &heard,
+        ));
+        assert_eq!(item_of(&pool, &second).message_connections[1], 30);
+        assert_eq!(item_of(&pool, &first).message_connections[1], 0);
+    }
+
+    #[test]
+    fn a_support_matches_nothing_without_the_full_message() {
+        let mut pool = pool();
+        add(
+            &mut pool,
+            support(5, 3),
+            &[0; crate::CONNECTION_MATRIX_SIZE],
+        );
+        let matrix: ConnectionMatrix =
+            [[0; crate::CONNECTION_MATRIX_SIZE]; crate::CONNECTION_MATRIX_SIZE];
+        assert!(!pool.update_message(
+            MessageType::Support as u8,
+            110,
+            None,
+            None,
+            &matrix,
+            &[0; crate::CONNECTION_MATRIX_SIZE],
+            &[0; crate::CONNECTION_MATRIX_SIZE],
+        ));
     }
 }

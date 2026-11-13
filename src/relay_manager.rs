@@ -597,6 +597,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize>
                 packet.message_type(),
                 sequence,
                 packet.payload_checksum(),
+                None, // multi-packet only: a Support never takes this path
                 &self.connection_matrix,
                 &self.connection_matrix[0],
                 &sender_connections,
@@ -792,6 +793,7 @@ impl<const CONNECTION_MATRIX_SIZE: usize, const WAIT_POOL_SIZE: usize>
                     message.message_type(),
                     sequence,
                     message.payload_checksum(),
+                    Some(message),
                     &self.connection_matrix,
                     &self.connection_matrix[0],
                     &self.connection_matrix[sender_index],
