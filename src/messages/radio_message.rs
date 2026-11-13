@@ -47,6 +47,9 @@ use crate::{
     RADIO_MULTI_PACKET_PACKET_HEADER_SIZE, RADIO_PACKET_SIZE,
 };
 
+/// Offset of the signature in a Support message: 13 B header, 4 B proposer, 32 B hash.
+const SUPPORT_SIGNATURE_OFFSET: usize = 49;
+
 /// Calculates CRC32C checksum for message payload integrity verification
 ///
 /// Uses the Castagnoli polynomial (0x82F63B78) which provides better error
@@ -1118,50 +1121,85 @@ impl RadioMessage {
 
     /// Creates a new Support message
     ///
-    /// Creates a message containing a cryptographic signature supporting a block that
-    /// derives from the pre-determined block creator order. Support messages are used
-    /// for consensus and validation in the network.
+    /// A support message carries one supporter's signature endorsing a deviation block
+    /// (blockchain FR12 / FR26, DEC-187). It is a single-packet message with this layout
+    /// (integers little-endian):
+    ///
+    /// ```text
+    /// [0]       message type (0x09)
+    /// [1..5)    sender node ID (rewritten at every relay hop)
+    /// [5..9)    deviation sequence
+    /// [9..13)   supporter node ID
+    /// [13..17)  proposer node ID
+    /// [17..49)  deviation block hash
+    /// [49..)    signature (64 B with Schnorr, 48 B with BLS: 113 B / 97 B in total)
+    /// ```
+    ///
+    /// Bytes `[5..len)` are the hop-invariant body (see [`RadioMessage::support_body`]).
     ///
     /// # Arguments
-    /// * `node_id` - The sender's node ID (the original message sender)
-    /// * `sequence` - Sequence number of the message being supported
-    /// * `supporter_node` - Node ID of the peer providing support
-    /// * `signature` - Cryptographic signature data (variable length)
+    /// * `node_id` - The sender's node ID
+    /// * `sequence` - Sequence of the deviation block being supported
+    /// * `supporter_node` - Node ID of the supporter that signed
+    /// * `proposer_node` - Node ID of the deviation block's creator
+    /// * `hash` - Hash of the deviation block
+    /// * `signature` - The supporter's signature bytes (length set by the crypto backend)
     ///
     /// # Returns
-    /// A new RadioMessage of type Support containing the signature
+    /// * `Ok(message)` - The Support message
+    /// * `Err(MessageError::MessageSizeOverflow)` - The signature would not fit in one packet
     ///
     /// # Example
     /// ```
     /// use moonblokz_radio_lib::RadioMessage;
     ///
-    /// let signature = vec![1, 2, 3, 4];
-    /// let message = RadioMessage::support_with(1, 42, 2, &signature);
+    /// let signature = [7u8; 64];
+    /// let message = RadioMessage::support_with(1, 42, 2, 3, &[5u8; 32], &signature).unwrap();
+    /// assert_eq!(message.length(), 113);
     /// ```
     pub fn support_with(
         node_id: u32,
         sequence: u32,
         supporter_node: u32,
+        proposer_node: u32,
+        hash: &[u8; 32],
         signature: &[u8],
-    ) -> Self {
-        // Create a new RadioMessage with a specific message type for support requests
+    ) -> Result<Self, MessageError> {
+        let length = SUPPORT_SIGNATURE_OFFSET + signature.len();
+        if length > RADIO_PACKET_SIZE {
+            return Err(MessageError::MessageSizeOverflow);
+        }
         let mut full_payload = [0u8; RADIO_MAX_MESSAGE_SIZE];
         full_payload[0] = MessageType::Support as u8;
-        let node_id_bytes = node_id.to_le_bytes();
-        full_payload[1..1 + node_id_bytes.len()].copy_from_slice(&node_id_bytes);
-        let sequence_bytes = sequence.to_le_bytes();
-        full_payload[5..5 + sequence_bytes.len()].copy_from_slice(&sequence_bytes);
-        let supporter_node_bytes = supporter_node.to_le_bytes();
-        full_payload[9..9 + supporter_node_bytes.len()].copy_from_slice(&supporter_node_bytes);
-        full_payload[RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE
-            ..RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + signature.len()]
-            .copy_from_slice(signature);
+        full_payload[1..5].copy_from_slice(&node_id.to_le_bytes());
+        full_payload[5..9].copy_from_slice(&sequence.to_le_bytes());
+        full_payload[9..13].copy_from_slice(&supporter_node.to_le_bytes());
+        full_payload[13..17].copy_from_slice(&proposer_node.to_le_bytes());
+        full_payload[17..SUPPORT_SIGNATURE_OFFSET].copy_from_slice(hash);
+        full_payload[SUPPORT_SIGNATURE_OFFSET..length].copy_from_slice(signature);
 
-        RadioMessage {
+        Ok(RadioMessage {
             payload: full_payload,
-            length: RADIO_MULTI_PACKET_MESSAGE_HEADER_SIZE + signature.len(),
+            length,
             packets_to_send: None,
+        })
+    }
+
+    /// Returns the hop-invariant body of a Support message
+    ///
+    /// The body is bytes `[5..len)`: deviation sequence, supporter, proposer, deviation
+    /// block hash and signature. It excludes the message type and the relay sender, so
+    /// it is identical at every hop. The blockchain module classifies it (FR26); this
+    /// method does not validate its length.
+    ///
+    /// # Returns
+    /// * `Some(body)` - For a Support message
+    /// * `None` - For any other message type, or a message shorter than its header
+    pub fn support_body(&self) -> Option<&[u8]> {
+        if self.message_type() != MessageType::Support as u8 {
+            return None;
         }
+        self.payload.get(5..self.length)
     }
 
     /// Returns the message type
@@ -1351,7 +1389,7 @@ impl RadioMessage {
             && self.message_type() != MessageType::Support as u8
             && self.message_type() != MessageType::RequestBlockPart as u8
         {
-            return None; // Only AddBlock and AddTransaction messages have a sequence
+            return None; // Only AddBlock, RequestFullBlock, Support and RequestBlockPart carry one
         }
 
         // Extract the sequence number from the message payload
@@ -2303,5 +2341,60 @@ mod tests {
         // Verify reconstruction started correctly
         assert_eq!(reconstructed.message_type(), MessageType::AddBlock as u8);
         assert_eq!(reconstructed.sender_node_id(), 1);
+    }
+
+    // ---- Story 6.5: Support layout (DEC-187) ----
+
+    #[test]
+    fn support_layout_round_trips_for_both_signature_sizes() {
+        for sig_len in [64usize, 48] {
+            let signature: Vec<u8> = (0..sig_len as u8).collect();
+            let hash = [0xA5u8; 32];
+            let m = RadioMessage::support_with(7, 110, 3, 9, &hash, &signature).unwrap();
+            assert_eq!(m.length(), 49 + sig_len);
+            assert_eq!(m.message_type(), MessageType::Support as u8);
+            assert_eq!(m.sender_node_id(), 7);
+            assert_eq!(m.sequence(), Some(110));
+            let body = m.support_body().unwrap();
+            assert_eq!(body.len(), 44 + sig_len);
+            assert_eq!(&body[0..4], &110u32.to_le_bytes());
+            assert_eq!(&body[4..8], &3u32.to_le_bytes());
+            assert_eq!(&body[8..12], &9u32.to_le_bytes());
+            assert_eq!(&body[12..44], &hash);
+            assert_eq!(&body[44..], &signature[..]);
+            // A single packet carries it unchanged.
+            let packet = m.get_packet(0).unwrap();
+            let back = RadioMessage::from_single_packet(packet);
+            assert_eq!(back.support_body(), Some(body));
+        }
+    }
+
+    #[test]
+    fn a_support_signature_beyond_one_packet_is_refused() {
+        let fits = [0u8; RADIO_PACKET_SIZE - SUPPORT_SIGNATURE_OFFSET];
+        let m = RadioMessage::support_with(1, 2, 3, 4, &[0; 32], &fits).unwrap();
+        assert_eq!(m.length(), RADIO_PACKET_SIZE);
+        let too_long = [0u8; RADIO_PACKET_SIZE - SUPPORT_SIGNATURE_OFFSET + 1];
+        assert!(matches!(
+            RadioMessage::support_with(1, 2, 3, 4, &[0; 32], &too_long),
+            Err(MessageError::MessageSizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn the_support_body_is_only_served_for_supports() {
+        let block = RadioMessage::add_block_with(1, 2, &[1, 2, 3]);
+        assert_eq!(block.support_body(), None);
+        let request = RadioMessage::request_full_block_with(1, 2);
+        assert_eq!(request.support_body(), None);
+    }
+
+    #[test]
+    fn supports_relayed_by_different_senders_are_equal() {
+        let a = RadioMessage::support_with(1, 110, 3, 9, &[1; 32], &[2; 64]).unwrap();
+        let b = RadioMessage::support_with(2, 110, 3, 9, &[1; 32], &[2; 64]).unwrap();
+        let other_proposer = RadioMessage::support_with(1, 110, 3, 8, &[1; 32], &[2; 64]).unwrap();
+        assert!(a == b);
+        assert!(a != other_proposer);
     }
 }
