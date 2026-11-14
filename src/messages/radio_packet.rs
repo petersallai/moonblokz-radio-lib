@@ -112,8 +112,9 @@ impl RadioPacket {
 
     /// Extracts the payload checksum from applicable message types (internal use)
     ///
-    /// Payload checksums are present in AddBlock, RequestFullBlock, Support,
-    /// and RequestBlockPart message types. Used for duplicate detection and
+    /// Payload checksums are present in AddBlock, RequestFullBlock, AddTransaction
+    /// and RequestBlockPart message types. Support carries none: it is single-packet
+    /// and is matched by full equality instead. Used for duplicate detection and
     /// payload integrity verification.
     ///
     /// # Returns

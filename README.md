@@ -89,8 +89,8 @@ The nodes build a blockchain and communicate using seven message types:
 **Message Sizing**:
 
 - Only `add_block` and `add_transaction` support multi-packet fragmentation
-- All other messages fit in ~100 bytes, compatible with any radio hardware
-- All messages have a standard header including sender node identifier and payload checksum
+- All other messages fit in one packet; the largest is `support` (113 bytes with Schnorr, 97 with BLS signatures)
+- All messages have a standard header including the sender node identifier; `add_block` and `add_transaction` also carry a payload checksum
 
 ### Echo Protocol (Network Discovery)
 
@@ -186,7 +186,7 @@ When receiving `add_block` message the node doesn't have:
 - `add_transaction` → Same logic as `add_block`
 - `request_new_mempool_item` → If node has missing transactions, randomly chooses one, calculates waiting time. If no other nodes send selected transaction during wait, sends `add_transaction` when time expires.
 - `request_transaction_part` → Same logic as `request_block_part`
-- `support` → Same logic as `add_block` and `add_transaction`
+- `support` → Same logic as `add_block` and `add_transaction`, except that the wait pool matches a support only by an identical message (it carries no payload checksum, and two supports for the same sequence from different supporters are different messages)
 
 **Collision Avoidance**:
 
