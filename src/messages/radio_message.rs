@@ -1132,7 +1132,8 @@ impl RadioMessage {
     /// [9..13)   supporter node ID
     /// [13..17)  proposer node ID
     /// [17..49)  deviation block hash
-    /// [49..)    signature (64 B with Schnorr, 48 B with BLS: 113 B / 97 B in total)
+    /// [49..)    signature (64 / 48 / 96 B with `schnorr` / `bls-min-sig` / `bls-min-pk`:
+    ///           113 / 97 / 145 B in total)
     /// ```
     ///
     /// Bytes `[5..len)` are the hop-invariant body (see [`RadioMessage::support_body`]).
@@ -2346,8 +2347,9 @@ mod tests {
     // ---- Story 6.5: Support layout (DEC-187) ----
 
     #[test]
-    fn support_layout_round_trips_for_both_signature_sizes() {
-        for sig_len in [64usize, 48] {
+    fn support_layout_round_trips_for_every_signature_size() {
+        // `schnorr`, `bls-min-sig` and `bls-min-pk` (Story 6.17, DEC-251).
+        for sig_len in [64usize, 48, 96] {
             let signature: Vec<u8> = (0..sig_len as u8).collect();
             let hash = [0xA5u8; 32];
             let m = RadioMessage::support_with(7, 110, 3, 9, &hash, &signature).unwrap();
