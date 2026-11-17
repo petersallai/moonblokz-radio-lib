@@ -89,7 +89,7 @@ The nodes build a blockchain and communicate using seven message types:
 **Message Sizing**:
 
 - Only `add_block` and `add_transaction` support multi-packet fragmentation
-- All other messages fit in one packet; the largest is `support` (113 bytes with Schnorr, 97 with BLS signatures)
+- All other messages fit in one packet; the largest is `support` (113 bytes with `schnorr`, 97 with `bls-min-sig`, 145 with `bls-min-pk` signatures)
 - All messages have a standard header including the sender node identifier; `add_block` and `add_transaction` also carry a payload checksum
 
 ### Echo Protocol (Network Discovery)
